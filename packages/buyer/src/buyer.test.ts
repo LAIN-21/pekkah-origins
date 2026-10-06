@@ -1,4 +1,5 @@
 import { DEFAULT_ASSET } from "@pekkah/protocol";
+import { masumiEscrowAddress } from "@x402/cardano";
 import { describe, expect, it } from "vitest";
 import { check402, type PaymentExpectation, type RequirementsLike } from "./check.js";
 import { SpendLedger } from "./ledger.js";
@@ -46,6 +47,65 @@ describe("check402 (default payments)", () => {
     expect(check402({ ...req, extra: { assetTransferMethod: "masumi" } }, expectB)).toMatch(
       /transfer method/,
     );
+  });
+});
+
+describe("check402 (Masumi escrow)", () => {
+  const ESCROW = masumiEscrowAddress("cardano:preprod");
+  const request = { workload: "fractal", params: { preset: "hd-fast", palette: "mint" } };
+  const masumiReq = (sellerAddress: string, parameters?: unknown): RequirementsLike => ({
+    ...req,
+    payTo: ESCROW,
+    extra: {
+      assetTransferMethod: "masumi",
+      terms: { sellerAddress, inputHash: "ab".repeat(32) },
+      inputCommitment: {
+        parts:
+          parameters === undefined
+            ? [{ name: "resource", content: { url: "http://x/api/dev/smoke-escrow" } }]
+            : [{ name: "parameters", canonicalization: "jcs", content: parameters }],
+      },
+    },
+  });
+  const expectLock: PaymentExpectation = {
+    payTo: ESCROW,
+    amountAtomic: "10000",
+    asset: DEFAULT_ASSET,
+    transferMethod: "masumi",
+    seller: SELLER_B,
+  };
+
+  it("accepts a lock at the escrow with the expected worker as seller", () => {
+    expect(check402(masumiReq(SELLER_B), expectLock)).toBeNull();
+  });
+
+  it("refuses a Masumi 402 whose seller differs from the expected address", () => {
+    expect(check402(masumiReq(SELLER_C), expectLock)).toMatch(/seller/);
+    expect(check402(masumiReq(SELLER_B), { ...expectLock, seller: undefined })).toMatch(/seller/);
+  });
+
+  it("refuses a Masumi payTo that is not the escrow", () => {
+    expect(check402({ ...masumiReq(SELLER_B), payTo: SELLER_C }, expectLock)).toMatch(/escrow/);
+    expect(check402(masumiReq(SELLER_B), { ...expectLock, payTo: SELLER_C })).toMatch(/escrow/);
+  });
+
+  it("binds an offer's lock to the exact request quoted, in any key order", () => {
+    const reordered = { params: { palette: "mint", preset: "hd-fast" }, workload: "fractal" };
+    expect(
+      check402(masumiReq(SELLER_B, reordered), { ...expectLock, parameters: request }),
+    ).toBeNull();
+    const other = { ...request, params: { preset: "hd-heavy", palette: "mint" } };
+    expect(check402(masumiReq(SELLER_B, other), { ...expectLock, parameters: request })).toMatch(
+      /different request/,
+    );
+    expect(check402(masumiReq(SELLER_B), { ...expectLock, parameters: request })).toMatch(
+      /does not commit/,
+    );
+  });
+
+  it("refuses a Masumi 402 when a default payment was accepted, and the reverse", () => {
+    expect(check402(masumiReq(SELLER_B), expectB)).toMatch(/transfer method/);
+    expect(check402(req, expectLock)).toMatch(/transfer method/);
   });
 });
 

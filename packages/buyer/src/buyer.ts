@@ -8,7 +8,7 @@ import {
   toClientCardanoSigner,
 } from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/client";
-import type { SettleResponse } from "@x402/core/types";
+import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
 import { Agent, setGlobalDispatcher } from "undici";
 import {
@@ -78,6 +78,8 @@ export interface BuyResult {
   paymentHeader?: string;
   /** The signed transaction's TTL: from this slot on it can never land. */
   ttlSlot?: string;
+  /** The requirements the agent signed against (for Masumi, the seller-signed terms). */
+  accepted?: PaymentRequirements;
   /** From PAYMENT-RESPONSE: present only when the payment settled. */
   settle?: SettleResponse;
   /** A first signature the facilitator refused on a stale chain view; it was never broadcast. */
@@ -94,6 +96,7 @@ interface Pending {
   ttlSlot?: string;
   inputs?: string[];
   refused?: { txHash: string; reason: string };
+  accepted?: PaymentRequirements;
 }
 
 export interface Buyer {
@@ -154,6 +157,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
     pending.txHash = txHash;
     pending.inputs = tx.inputs;
     if (tx.ttlSlot !== undefined) pending.ttlSlot = tx.ttlSlot.toString();
+    pending.accepted = structuredClone(paymentPayload.accepted);
     pending.paymentHeader = http.encodePaymentSignatureHeader(paymentPayload)["PAYMENT-SIGNATURE"];
     ledger.record(pending.runId, paymentPayload.accepted.amount);
     try {
@@ -229,6 +233,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
             ...(current.paymentHeader ? { paymentHeader: current.paymentHeader } : {}),
             ...(current.ttlSlot ? { ttlSlot: current.ttlSlot } : {}),
             ...(current.refused ? { refused: current.refused } : {}),
+            ...(current.accepted ? { accepted: current.accepted } : {}),
             ...(settle ? { settle } : {}),
             durationMs: Date.now() - started,
           };

@@ -13,6 +13,8 @@
     "@pekkah/buyer": "workspace:*",
     "@pekkah/protocol": "workspace:*",
     "@pekkah/runtime": "workspace:*",
+    "@x402/cardano": "2.26.0",
+    "@x402/core": "2.26.0",
     "tsx": "^4.23.15",
     "zod": "^3.25.76"
   }
