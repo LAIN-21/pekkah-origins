@@ -139,7 +139,7 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
         title: "Receipt issued",
         detail:
           r.transferMethod === "masumi"
-            ? `${formatAsset(r.amountAtomic)} locked in escrow. ${MASUMI_LOCK_LABEL}`
+            ? `${formatAsset(r.amountAtomic)} locked in Masumi escrow.`
             : `${formatAsset(r.amountAtomic)} paid to the worker that ran the job.`,
         tone: "good",
         href: r.explorerUrl,
@@ -148,7 +148,7 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
     case "escrow.locked":
       return {
         title: "Locked in Masumi escrow",
-        detail: `${formatAsset(e.data.amountAtomic)} with ${short(e.data.sellerAddress, 12, 6)} as the seller.`,
+        detail: `${formatAsset(e.data.amountAtomic)} with ${short(e.data.sellerAddress, 12, 6)} as the seller. ${MASUMI_LOCK_LABEL}`,
         tone: "good",
         href: e.data.explorerUrl,
       };

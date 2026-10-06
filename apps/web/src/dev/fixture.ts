@@ -31,8 +31,8 @@ export const FIXTURE_MARKER = "pekkah-dev-fixture-data";
 // bech32 characters only, so the made-up addresses pass the protocol's checks.
 const BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
-function fakeAddress(tag: number): string {
-  let out = "addr_test1q";
+function fakeAddress(tag: number, kind: "q" | "w" = "q"): string {
+  let out = `addr_test1${kind}`;
   for (let i = 0; i < 57; i++) out += BECH32[(i * 7 + tag * 13) % 32];
   return out;
 }
@@ -43,6 +43,9 @@ function fakeHex(tag: number, fill: string): string {
 
 const PAYOUT: Record<string, string> = { A: fakeAddress(1), B: fakeAddress(2), C: fakeAddress(3) };
 const PRICE_USD: Record<string, number> = { A: 0.05, B: 0.03, C: 0.02 };
+/** A made-up script address standing in for Masumi's escrow. */
+const ESCROW_ADDRESS = fakeAddress(9, "w");
+const COLLATERAL_LOVELACE = "1448000";
 
 function fixtureWorkers(at: string): WorkerSnapshot[] {
   const fractal = (calibSec: number) => ({
@@ -112,6 +115,8 @@ type EventInput = {
   type: EventType;
   source: JobEvent["source"];
   data: unknown;
+  /** Data that depends on the event's own timestamp (the escrow deadlines). */
+  dataAt?: (ts: string) => unknown;
   jobId?: string;
 };
 
@@ -164,9 +169,15 @@ function attempt(
     fails?: boolean;
     settleSec?: number;
     gpu?: boolean;
+    /** Bought through the escrow route: the funds are locked, never paid. */
+    escrow?: boolean;
+    /** The quoted request, which the escrow commits to. */
+    request?: unknown;
   },
 ): { steps: Step[]; end: number } {
   const tag = ++attemptTag;
+  const method: "default" | "masumi" = options.escrow ? "masumi" : "default";
+  const payTo = options.escrow ? ESCROW_ADDRESS : o.payTo;
   const txHash = fakeHex(tag, "dead");
   const jobId = `job-${runId}-${tag}`;
   const w = o.workerId;
@@ -184,10 +195,10 @@ function attempt(
         data: {
           offerId: o.offerId,
           workerId: w,
-          payTo: o.payTo,
+          payTo,
           amountAtomic: o.priceAtomic,
           asset: o.asset,
-          transferMethod: "default",
+          transferMethod: method,
         },
       },
     },
@@ -198,10 +209,10 @@ function attempt(
         source: "agent",
         data: {
           txHash,
-          payTo: o.payTo,
+          payTo,
           amountAtomic: o.priceAtomic,
           offerId: o.offerId,
-          transferMethod: "default",
+          transferMethod: method,
         },
       },
     },
@@ -214,9 +225,9 @@ function attempt(
           txHash,
           offerId: o.offerId,
           workerId: w,
-          payTo: o.payTo,
+          payTo,
           amountAtomic: o.priceAtomic,
-          transferMethod: "default",
+          transferMethod: method,
         },
       },
     },
@@ -295,7 +306,7 @@ function attempt(
       event: {
         type: "payment.settling",
         source: "market",
-        data: { txHash, transferMethod: "default" },
+        data: { txHash, transferMethod: method },
       },
     },
   );
@@ -310,10 +321,11 @@ function attempt(
           txHash,
           confirmations: 1,
           explorerUrl: explorerTxUrl(txHash),
-          transferMethod: "default",
+          transferMethod: method,
         },
       },
     },
+    ...(options.escrow ? [escrowStep(at + 50, txHash, o, options.request)] : []),
     {
       at: at + 100,
       event: {
@@ -324,13 +336,13 @@ function attempt(
           receipt: {
             txHash,
             network: "cardano:preprod",
-            payTo: o.payTo,
+            payTo,
             amountAtomic: o.priceAtomic,
             asset: o.asset,
-            transferMethod: "default",
+            transferMethod: method,
             confirmations: 1,
             feeLovelace: "183125",
-            lovelaceInPaymentOutput: "1189560",
+            lovelaceInPaymentOutput: options.escrow ? COLLATERAL_LOVELACE : "1189560",
             explorerUrl: explorerTxUrl(txHash),
             settledAt: new Date().toISOString(),
           },
@@ -348,6 +360,56 @@ function attempt(
     },
   );
   return { steps, end: at + 400 };
+}
+
+/** The escrow.locked event: the lock's terms, with Masumi's default deadlines (PLAN 4.8). */
+/**
+ * A made-up 64-hex "commitment" that differs per request (FNV-1a rounds over its
+ * JSON). The real inputHash is Masumi's commitment to the quoted request.
+ */
+function fakeRequestHash(request: unknown): string {
+  const text = JSON.stringify(request);
+  let out = "";
+  for (let round = 0; round < 8; round++) {
+    let h = 0x811c9dc5 ^ round;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    out += (h >>> 0).toString(16).padStart(8, "0");
+  }
+  return out;
+}
+
+function escrowStep(at: number, txHash: string, o: Offer, request: unknown): Step {
+  const inputHash = fakeRequestHash(request);
+  return {
+    at,
+    event: {
+      type: "escrow.locked",
+      source: "market",
+      data: null,
+      // Deadlines follow the lock's own time, also in a replay of an old run.
+      dataAt: (ts) => {
+        const payBy = Date.parse(ts) + 600_000;
+        const minutes = (m: number) => String(payBy + m * 60_000);
+        return {
+          txHash,
+          escrowAddress: ESCROW_ADDRESS,
+          sellerAddress: o.payTo,
+          amountAtomic: o.priceAtomic,
+          asset: o.asset,
+          collateralLovelace: COLLATERAL_LOVELACE,
+          inputHash,
+          payByTime: String(payBy),
+          submitResultTime: minutes(15),
+          unlockTime: minutes(35),
+          externalDisputeUnlockTime: minutes(55),
+          explorerUrl: explorerTxUrl(txHash),
+        };
+      },
+    },
+  };
 }
 
 function quoteStep(at: number, quote: Quote): Step {
@@ -401,7 +463,13 @@ export function scenarioSteps(scenario: ScenarioName, runId: string): Step[] {
         "A asks $0.05, within my budget of $0.05, and estimates about 9 s for a 60 s deadline.",
       ]),
     );
-    const paid = attempt(1600, a, runId, { jobSec: 7.4, deadlineSec, gpu: true });
+    const paid = attempt(1600, a, runId, {
+      jobSec: 7.4,
+      deadlineSec,
+      gpu: true,
+      escrow: scenario === "gpu-image-escrow",
+      request,
+    });
     steps.push(...paid.steps);
     end = paid.end;
   } else if (scenario === "cpu-counter") {
@@ -433,6 +501,29 @@ export function scenarioSteps(scenario: ScenarioName, runId: string): Step[] {
       ]),
     );
     const paid = attempt(1700, c, runId, { jobSec: 29.5, deadlineSec });
+    steps.push(...paid.steps);
+    end = paid.end;
+  } else if (scenario === "fractal-escrow") {
+    const q = `q-${runId}-1`;
+    const a = offer(q, "A", "fractal", 6.2, "exact");
+    steps.push(
+      quoteStep(800, {
+        quoteId: q,
+        runId,
+        request,
+        offers: [a],
+        marketPriceUsd: 0.05,
+        rejected: [
+          { workerId: "B", reason: "excluded", detail: "Excluded by my agent" },
+          { workerId: "C", reason: "excluded", detail: "Excluded by my agent" },
+        ],
+        expiresAt,
+      }),
+      decisionStep(1200, "exact", a, [
+        "A asks $0.05, within my budget, and sells through Masumi escrow.",
+      ]),
+    );
+    const paid = attempt(1600, a, runId, { jobSec: 5.8, deadlineSec, escrow: true, request });
     steps.push(...paid.steps);
     end = paid.end;
   } else if (scenario === "cpu-tight") {
@@ -548,11 +639,13 @@ let eventSeq = 0;
 
 function toEvent(prefix: string, input: EventInput, runId: string, ts: string): JobEvent {
   eventSeq += 1;
+  const { dataAt, ...rest } = input;
   return JobEvent.parse({
     id: `${prefix}${String(eventSeq).padStart(8, "0")}`,
     ts,
     runId,
-    ...input,
+    ...rest,
+    data: dataAt ? dataAt(ts) : rest.data,
   });
 }
 
