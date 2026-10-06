@@ -21,20 +21,29 @@ import {
 } from "../packages/protocol/src/index.js";
 import { loadLocalEnv } from "../packages/runtime/src/index.js";
 
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    runs: { type: "string", default: "1" },
-    prompt: { type: "string" },
-    "run-id": { type: "string", multiple: true },
-  },
-});
+const USAGE = `usage: demo-run.ts <${ScenarioName.options.join("|")}> [--runs N] [--prompt 0-4] | --run-id <id>…`;
+
+function parseCli() {
+  try {
+    return parseArgs({
+      allowPositionals: true,
+      options: {
+        runs: { type: "string", default: "1" },
+        prompt: { type: "string" },
+        "run-id": { type: "string", multiple: true },
+      },
+    });
+  } catch (err) {
+    // e.g. "--runs -1": parseArgs reads -1 as an option, not a value.
+    console.error(`demo-run: ${err instanceof Error ? err.message : String(err)}\n${USAGE}`);
+    process.exit(2);
+  }
+}
+const { values, positionals } = parseCli();
 const existing = values["run-id"] ?? [];
 const scenario = ScenarioName.safeParse(positionals[0] ?? "gpu-image");
 if (!scenario.success || (existing.length === 0 && positionals.length === 0)) {
-  console.error(
-    `usage: demo-run.ts <${ScenarioName.options.join("|")}> [--runs N] [--prompt 0-4] | --run-id <id>…`,
-  );
+  console.error(USAGE);
   process.exit(2);
 }
 process.env.PEKKAH_ENV_FILE ||= join(homedir(), ".pekkah", "env", "market.env");
@@ -83,30 +92,83 @@ async function start(): Promise<string> {
   throw new Error("gave up waiting for the market after 15 min");
 }
 
+/** A GET that never throws: network and decoding failures come back as `ok: false`. */
+async function getJson(
+  url: string,
+): Promise<{ ok: true; data: unknown } | { ok: false; why: string }> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return { ok: false, why: `HTTP ${res.status}` };
+    return { ok: true, data: await res.json() };
+  } catch (err) {
+    return { ok: false, why: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * The run's events once it has ended. Failed reads are retried within the 15 min bound;
+ * a run the market doesn't know (30 s of 404s) stops early.
+ */
 async function follow(runId: string): Promise<JobEvent[]> {
+  let notFound = 0;
   for (let i = 0; i < 450; i++) {
-    const res = await fetch(`${base}/api/runs/${runId}/events`);
-    if (res.ok) {
-      const log = RunLog.parse(await res.json());
-      if (log.events.some((e) => e.type === "run.completed" || e.type === "run.failed")) {
-        return log.events;
-      }
+    const got = await getJson(`${base}/api/runs/${runId}/events`);
+    notFound = !got.ok && got.why === "HTTP 404" ? notFound + 1 : 0;
+    if (notFound >= 15) throw new Error(`run ${runId} isn't known to the market`);
+    const log = got.ok ? RunLog.safeParse(got.data) : null;
+    if (log?.success) {
+      const ended = log.data.events.some(
+        (e) => e.type === "run.completed" || e.type === "run.failed",
+      );
+      if (ended) return log.data.events;
     }
     await sleep(2_000);
   }
-  throw new Error(`run ${runId} didn't end within 15 min`);
+  throw new Error(`run ${runId} didn't end within 15 min (or its events couldn't be read)`);
 }
 
-async function onChain(txHash: string): Promise<TxStatus | null> {
+type ChainCheck =
+  | { state: "found"; status: TxStatus }
+  | { state: "not_found" }
+  | { state: "unavailable"; why: string };
+
+/** Up to 60 s: found, or not found by valid answers, or no valid answer at all. */
+async function onChain(txHash: string): Promise<ChainCheck> {
+  let answered = false;
+  let why = "no answer";
   for (let i = 0; i < 12; i++) {
-    const res = await fetch(`${base}/api/tx/${txHash}`);
-    if (res.ok) {
-      const status = TxStatus.parse(await res.json());
-      if (status.found) return status;
+    const got = await getJson(`${base}/api/tx/${txHash}`);
+    const status = got.ok ? TxStatus.safeParse(got.data) : null;
+    if (status?.success) {
+      answered = true;
+      if (status.data.found) return { state: "found", status: status.data };
+    } else {
+      why = got.ok ? "unexpected answer" : got.why;
     }
     await sleep(5_000);
   }
-  return null;
+  return answered ? { state: "not_found" } : { state: "unavailable", why };
+}
+
+/** The result bytes, with three tries; otherwise why it failed. */
+async function download(url: string): Promise<{ data: Buffer; type: string } | { why: string }> {
+  let why = "";
+  for (let i = 0; i < 3; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        return {
+          data: Buffer.from(await res.arrayBuffer()),
+          type: res.headers.get("content-type") ?? "",
+        };
+      }
+      why = `HTTP ${res.status}`;
+    } catch (err) {
+      why = err instanceof Error ? err.message : String(err);
+    }
+    await sleep(2_000);
+  }
+  return { why };
 }
 
 /** Prints a finished run's evidence; returns false when it didn't settle. */
@@ -139,17 +201,22 @@ async function report(runId: string, events: JobEvent[]): Promise<boolean> {
   console.log(`  tx  ${settled.data.explorerUrl}`);
   const chain = await onChain(r.txHash);
   console.log(
-    `  on chain: ${chain ? `yes, block ${chain.block ?? "?"}, ${chain.confirmations ?? 0} confirmations` : "NOT FOUND within 60 s"}`,
+    `  on chain: ${
+      chain.state === "found"
+        ? `yes, block ${chain.status.block ?? "?"}, ${chain.status.confirmations ?? 0} confirmations`
+        : chain.state === "not_found"
+          ? "NOT FOUND within 60 s"
+          : `status unavailable (${chain.why}); check the Cardanoscan link`
+    }`,
   );
   if (receipt.data.resultUrl) {
-    const res = await fetch(`${base}${receipt.data.resultUrl}`);
-    if (res.ok) {
-      const ext = (res.headers.get("content-type") ?? "").includes("png") ? "png" : "bin";
-      const file = join(out, `${runId}.${ext}`);
-      writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+    const result = await download(`${base}${receipt.data.resultUrl}`);
+    if ("data" in result) {
+      const file = join(out, `${runId}.${result.type.includes("png") ? "png" : "bin"}`);
+      writeFileSync(file, result.data);
       console.log(`  result saved to ${file.replace(`${join(import.meta.dirname, "..")}/`, "")}`);
     } else {
-      console.log(`  result: ${res.status} from ${receipt.data.resultUrl}`);
+      console.log(`  result: couldn't download ${receipt.data.resultUrl} (${result.why})`);
     }
   }
   const total = find(events, "run.completed")[0]?.data.totalMs;
@@ -157,20 +224,35 @@ async function report(runId: string, events: JobEvent[]): Promise<boolean> {
   return true;
 }
 
+/** Follows a run to its end and reports it; a run that can't be followed counts as a failure. */
+async function followAndReport(runId: string, label: string): Promise<boolean> {
+  let events: JobEvent[];
+  try {
+    events = await follow(runId);
+  } catch (err) {
+    console.log(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  console.log(`${label}: ${find(events, "run.started")[0]?.data.scenario ?? "?"}`);
+  return report(runId, events);
+}
+
 mkdirSync(out, { recursive: true });
 let failures = 0;
 if (existing.length > 0) {
   for (const runId of existing) {
-    const events = await follow(runId);
-    const scenarioName = find(events, "run.started")[0]?.data.scenario ?? "?";
-    console.log(`run ${runId}: ${scenarioName}`);
-    if (!(await report(runId, events))) failures += 1;
+    if (!(await followAndReport(runId, `run ${runId}`))) failures += 1;
   }
 } else {
-  for (let n = 1; n <= Number(values.runs); n++) {
+  // Checked before anything is paid: a typo must not start the wrong number of runs.
+  const runs = Number(values.runs);
+  if (!Number.isInteger(runs) || runs < 1) {
+    console.error(`demo-run: --runs must be a whole number of at least 1, got "${values.runs}"`);
+    process.exit(2);
+  }
+  for (let n = 1; n <= runs; n++) {
     const runId = await start();
-    console.log(`run ${n}: ${scenario.data}, runId ${runId}`);
-    if (!(await report(runId, await follow(runId)))) failures += 1;
+    if (!(await followAndReport(runId, `run ${n} (${runId})`))) failures += 1;
   }
 }
 process.exit(failures ? 1 : 0);
