@@ -29,5 +29,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - name: fractal workload tests
+        run: |
+          docker build -q -t pekkah/fractal:ci workloads/fractal
+          docker run --rm --network none --entrypoint python pekkah/fractal:ci -m unittest discover -s tests -v
       - name: gitleaks
         run: pnpm secrets:scan

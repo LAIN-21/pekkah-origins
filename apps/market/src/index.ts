@@ -5,9 +5,16 @@ import { AssetId, CardanoAddress, DEFAULT_ASSET, PEKKAH_VERSION } from "@pekkah/
 import { createLogger, envFlag, envPort, gitSha, readEnv } from "@pekkah/runtime";
 import { z } from "zod";
 import { createApp } from "./app.js";
-import { bearerGuard, registerSmokeEscrowRoute, registerSmokeRoute } from "./dev.js";
+import { createCalibrator } from "./calibration.js";
+import {
+  bearerGuard,
+  registerDevDispatchRoutes,
+  registerSmokeEscrowRoute,
+  registerSmokeRoute,
+} from "./dev.js";
 import { EventBus } from "./events.js";
 import { createMarketPayments } from "./payments.js";
+import { parseWorkerTokens, WorkerRegistry } from "./workers.js";
 
 const env = readEnv("market", {
   MARKET_PORT: envPort(8080),
@@ -21,6 +28,8 @@ const env = readEnv("market", {
   SELLER_B_ADDRESS: CardanoAddress.optional(),
   SELLER_C_ADDRESS: CardanoAddress.optional(),
   SELLER_A_MNEMONIC: z.string().optional(),
+  /** `A:<token>,B:<token>,C:<token>`: the allowlist of workers that may join. */
+  WORKER_TOKENS: z.string().min(1),
 });
 const log = createLogger("market");
 if (env.PEKKAH_DEV_ROUTES && !env.DEMO_TOKEN) {
@@ -58,6 +67,12 @@ const payments = createMarketPayments(
   bus,
   log,
 );
+const registry = new WorkerRegistry({
+  tokens: parseWorkerTokens(env.WORKER_TOKENS),
+  bus,
+  log,
+  calibrate: createCalibrator(bus, log),
+});
 const sellers = Object.fromEntries(
   (["A", "B", "C"] as const).flatMap((id) => {
     const address = env[`SELLER_${id}_ADDRESS`];
@@ -69,8 +84,11 @@ const app = createApp({
   version: PEKKAH_VERSION,
   sha,
   webDist,
-  workersOnline: () => 0,
+  workersOnline: () => registry.online(),
   routes: (app) => {
+    app.get("/api/workers", (_req, res) => {
+      res.json(registry.snapshots());
+    });
     if (env.PEKKAH_DEV_ROUTES && env.DEMO_TOKEN) {
       const guard = bearerGuard(env.DEMO_TOKEN);
       const common = {
@@ -80,6 +98,7 @@ const app = createApp({
         log,
       };
       registerSmokeRoute(app, guard, { ...common, sellers });
+      registerDevDispatchRoutes(app, guard, { registry, log });
       if (seller) registerSmokeEscrowRoute(app, guard, common);
     }
   },
@@ -99,10 +118,12 @@ const server = app.listen(env.MARKET_PORT, () => {
     "market listening",
   );
 });
+registry.attach(server);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     log.info({ signal }, "market stopping");
+    registry.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   });
