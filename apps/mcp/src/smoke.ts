@@ -1,6 +1,7 @@
-// pnpm --dir apps/mcp smoke [--buy "<prompt>"] [--max-usd 0.05]
+// pnpm --dir apps/mcp smoke [--quote "<prompt>" [--budget 0.03]] [--buy "<prompt>"] [--max-usd 0.05]
 // Starts the MCP server over stdio the way Claude Desktop does, lists its tools and calls
-// pekkah_market (free). With --buy it also calls pekkah_generate_image: a real payment.
+// pekkah_market (free). --quote calls pekkah_quote (free). --buy calls pekkah_generate_image:
+// a real payment.
 // The server reads its own env (MARKET_URL, PEKKAH_ENV_FILE); this script never sees secrets.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -9,7 +10,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const { values } = parseArgs({
-  options: { buy: { type: "string" }, "max-usd": { type: "string", default: "0.05" } },
+  options: {
+    quote: { type: "string" },
+    budget: { type: "string" },
+    buy: { type: "string" },
+    "max-usd": { type: "string", default: "0.05" },
+  },
 });
 const appDir = join(import.meta.dirname, "..");
 
@@ -35,6 +41,17 @@ for (const c of market.content as { type: string; text?: string }[]) {
 
 type Content = { type: string; text?: string; data?: string; mimeType?: string }[];
 
+if (values.quote) {
+  const quote = await client.callTool({
+    name: "pekkah_quote",
+    arguments: {
+      prompt: values.quote,
+      ...(values.budget ? { budgetUsd: Number(values.budget) } : {}),
+    },
+  });
+  for (const c of quote.content as Content) if (c.type === "text") console.log(c.text);
+}
+
 if (values.buy) {
   // Like Claude: when the purchase is still settling, ask for it again by run id.
   let result = await client.callTool({
@@ -45,10 +62,10 @@ if (values.buy) {
     const pending = (result.content as Content)
       .map((c) => c.text ?? "")
       .join(" ")
-      .match(/pekkah_get_image with runId "([^"]+)"/);
+      .match(/pekkah_result with runId "([^"]+)"/);
     if (!pending?.[1]) break;
     console.log(`still settling, asking again for run ${pending[1]}`);
-    result = await client.callTool({ name: "pekkah_get_image", arguments: { runId: pending[1] } });
+    result = await client.callTool({ name: "pekkah_result", arguments: { runId: pending[1] } });
   }
   for (const c of result.content as Content) {
     if (c.type === "text") console.log(c.text);

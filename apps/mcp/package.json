@@ -13,6 +13,7 @@
     "@pekkah/buyer": "workspace:*",
     "@pekkah/protocol": "workspace:*",
     "@pekkah/runtime": "workspace:*",
+    "@x402/cardano": "2.26.0",
     "jpeg-js": "0.4.4",
     "pngjs": "7.0.0",
     "tsx": "^4.23.15",
