@@ -1,4 +1,5 @@
 import { NETWORK, type TransferMethod, usdToAtomic } from "@pekkah/protocol";
+import { assertMnemonic } from "@pekkah/runtime";
 import { decodeCardanoTransaction, toClientCardanoSigner } from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/client";
 import type { PaymentPayload, SettleResponse } from "@x402/core/types";
@@ -82,13 +83,23 @@ export interface Buyer {
   idle(): Promise<void>;
 }
 
+function buyerSigner(config: BuyerConfig) {
+  // Checked first: the wallet library would put an unknown word in its error message.
+  assertMnemonic("BUYER_MNEMONIC", config.mnemonic);
+  try {
+    return toClientCardanoSigner({
+      mnemonic: config.mnemonic,
+      network: NETWORK,
+      accountIndex: config.accountIndex ?? 0,
+      provider: { blockfrost: config.blockfrost, requestTimeoutMs: 30_000 },
+    });
+  } catch {
+    throw new Error("could not derive the buyer wallet from BUYER_MNEMONIC");
+  }
+}
+
 export function createBuyer(config: BuyerConfig): Buyer {
-  const signer = toClientCardanoSigner({
-    mnemonic: config.mnemonic,
-    network: NETWORK,
-    accountIndex: config.accountIndex ?? 0,
-    provider: { blockfrost: config.blockfrost, requestTimeoutMs: 30_000 },
-  });
+  const signer = buyerSigner(config);
   const perPayment = usdToAtomic(config.caps.perPaymentUsd);
   const ledger = new SpendLedger({
     perPayment: BigInt(perPayment),

@@ -52,18 +52,31 @@ if (!payTo) {
 }
 const market = (values.market ?? env.MARKET_URL).replace(/\/+$/, "");
 
-const buyer = createBuyer({
-  mnemonic: env.BUYER_MNEMONIC,
-  accountIndex: env.BUYER_ACCOUNT_INDEX,
-  blockfrost: { baseUrl: env.BLOCKFROST_BASE_URL, projectId: env.BLOCKFROST_PROJECT_ID },
-  asset: env.PEKKAH_ASSET,
-  caps: {
-    perPaymentUsd: env.CAP_PER_PAYMENT_USD,
-    perRunUsd: env.CAP_RUN_USD,
-    perDayUsd: env.CAP_DAY_USD,
-  },
-  onEvent: (e) => console.log(`signed     ${e.data.txHash} → ${e.data.payTo}`),
-});
+const buyer = (() => {
+  try {
+    return createBuyerFromEnv();
+  } catch (err) {
+    console.error(
+      `agent smoke: ${err instanceof Error ? err.message : "could not create the buyer"}`,
+    );
+    process.exit(1);
+  }
+})();
+
+function createBuyerFromEnv() {
+  return createBuyer({
+    mnemonic: env.BUYER_MNEMONIC,
+    accountIndex: env.BUYER_ACCOUNT_INDEX,
+    blockfrost: { baseUrl: env.BLOCKFROST_BASE_URL, projectId: env.BLOCKFROST_PROJECT_ID },
+    asset: env.PEKKAH_ASSET,
+    caps: {
+      perPaymentUsd: env.CAP_PER_PAYMENT_USD,
+      perRunUsd: env.CAP_RUN_USD,
+      perDayUsd: env.CAP_DAY_USD,
+    },
+    onEvent: (e) => console.log(`signed     ${e.data.txHash} → ${e.data.payTo}`),
+  });
+}
 
 const show = (b: { lovelace: string; assetAtomic: string }) =>
   `${formatAtomic(b.assetAtomic)} tUSDM, ${formatLovelace(b.lovelace)}`;

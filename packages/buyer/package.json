@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@pekkah/protocol": "workspace:*",
+    "@pekkah/runtime": "workspace:*",
     "@x402/cardano": "2.26.0",
     "@x402/core": "2.26.0",
     "@x402/fetch": "2.26.0",

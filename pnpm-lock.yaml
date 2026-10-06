@@ -282,6 +282,9 @@ importers:
       '@pekkah/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@pekkah/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@x402/cardano':
         specifier: 2.26.0
         version: 2.26.0
@@ -337,6 +340,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@scure/bip39':
+        specifier: ^2.4.0
+        version: 2.4.0
       pino:
         specifier: ^10.4.0
         version: 10.4.0
