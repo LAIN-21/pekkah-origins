@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
+  assertMasumiRoute,
   exactCardanoRoute,
+  masumiRoute,
   type PaymentOperations,
   paidRoute,
   txHashFromPaymentHeader,
@@ -48,6 +50,16 @@ export interface SmokeRouteOptions {
   log: Logger;
 }
 
+/** The txHash of a payment every verify hook passed, or null: the handler's own precondition. */
+function verifiedTx(header: string | undefined, operations: PaymentOperations): string | null {
+  try {
+    const txHash = header ? txHashFromPaymentHeader(header) : null;
+    return txHash && operations.isVerified(txHash) ? txHash : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * POST /api/dev/smoke/:seller: a real $0.01 x402 payment to the seller's address, chosen per
  * request. The handler does real, trivial work (it hashes the body) or answers 500 with
@@ -93,14 +105,8 @@ export function registerSmokeRoute(
     async (req, res) => {
       try {
         // Defence in depth: refuse unless every verify hook passed for this payment.
-        const header = req.header("payment-signature");
-        let txHash: string | null = null;
-        try {
-          txHash = header ? txHashFromPaymentHeader(header) : null;
-        } catch {
-          txHash = null;
-        }
-        if (!txHash || !o.operations.isVerified(txHash)) {
+        const txHash = verifiedTx(req.header("payment-signature"), o.operations);
+        if (!txHash) {
           res.status(402).json({ error: "payment_required" });
           return;
         }
@@ -122,6 +128,57 @@ export function registerSmokeRoute(
         });
       } catch (err) {
         o.log.error({ err }, "smoke handler failed");
+        if (!res.headersSent) res.status(500).json({ error: "internal" });
+        else res.end();
+      }
+    },
+  );
+}
+
+export const SMOKE_ESCROW_PATTERN = "POST /api/dev/smoke-escrow";
+
+export interface SmokeEscrowRouteOptions {
+  server: x402ResourceServer;
+  operations: PaymentOperations;
+  asset: string;
+  l1Confirmations: number;
+  log: Logger;
+}
+
+/**
+ * POST /api/dev/smoke-escrow (PR-02m, the Masumi feasibility gate): a real $0.01 lock in
+ * Masumi's escrow with worker A as the seller, committed to the resource URL (the library
+ * default). Nothing is released: I implement the lock only.
+ */
+export function registerSmokeEscrowRoute(
+  app: express.Express,
+  guard: RequestHandler,
+  o: SmokeEscrowRouteOptions,
+) {
+  const price = { amount: SMOKE_PRICE_ATOMIC, asset: o.asset };
+  const route = masumiRoute({
+    price,
+    description: "Pekkah Masumi escrow smoke lock (dev only)",
+    l1Confirmations: o.l1Confirmations,
+  });
+  assertMasumiRoute(route, price);
+  app.post(
+    "/api/dev/smoke-escrow",
+    guard,
+    express.raw({ type: () => true, limit: "16kb" }),
+    paidRoute(SMOKE_ESCROW_PATTERN, route, o.server),
+    async (req, res) => {
+      try {
+        const txHash = verifiedTx(req.header("payment-signature"), o.operations);
+        if (!txHash) {
+          res.status(402).json({ error: "payment_required" });
+          return;
+        }
+        const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        const sha256 = createHash("sha256").update(body).digest("hex");
+        res.json({ ok: true, escrow: true, bytes: body.length, sha256, txHash });
+      } catch (err) {
+        o.log.error({ err }, "smoke-escrow handler failed");
         if (!res.headersSent) res.status(500).json({ error: "internal" });
         else res.end();
       }

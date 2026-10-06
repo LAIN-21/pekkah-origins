@@ -1,5 +1,11 @@
 import { MAX_TIMEOUT_SECONDS, NETWORK, type PaymentReceipt } from "@pekkah/protocol";
-import { ExactCardanoScheme } from "@x402/cardano/exact/server";
+import { masumiEscrowAddress, toMasumiSellerSigner } from "@x402/cardano";
+import {
+  assertMasumiTemplate,
+  ExactCardanoScheme,
+  type MasumiIssueContext,
+  type MasumiSellerSigner,
+} from "@x402/cardano/exact/server";
 import type { DynamicPayTo, DynamicPrice } from "@x402/core/http";
 import {
   type FacilitatorClient,
@@ -22,6 +28,22 @@ export interface ResourceServerOptions {
   timeoutMs?: number;
   /** Tests pass an in-process facilitator. */
   facilitator?: FacilitatorClient;
+  /**
+   * Enables Masumi routes. One scheme instance serves both methods: `default` payments behave
+   * exactly as without it, and the quote store is only used by Masumi routes.
+   */
+  masumi?: {
+    seller: MasumiSellerSigner;
+    /** What the escrow binds to; the library default commits to the resource URL. */
+    commitment?: (context: MasumiIssueContext) => MasumiCommitmentPart[];
+  };
+}
+
+export interface MasumiCommitmentPart {
+  name: string;
+  canonicalization: "jcs" | "raw";
+  mediaType?: string;
+  content: unknown;
 }
 
 export function createResourceServer(options: ResourceServerOptions): x402ResourceServer {
@@ -31,7 +53,29 @@ export function createResourceServer(options: ResourceServerOptions): x402Resour
       url: options.facilitatorUrl,
       timeoutMs: options.timeoutMs ?? 120_000,
     });
-  return new x402ResourceServer(facilitator).register(NETWORK, new ExactCardanoScheme());
+  const scheme = options.masumi
+    ? new ExactCardanoScheme({
+        masumi: {
+          seller: options.masumi.seller,
+          ...(options.masumi.commitment ? { commitment: options.masumi.commitment } : {}),
+        },
+      })
+    : new ExactCardanoScheme();
+  return new x402ResourceServer(facilitator).register(NETWORK, scheme);
+}
+
+/**
+ * The Masumi seller from its mnemonic, refused unless it derives the expected address: the
+ * seller named in the escrow terms must be the worker that address belongs to.
+ */
+export function masumiSeller(mnemonic: string, expectedAddress: string): MasumiSellerSigner {
+  const seller = toMasumiSellerSigner({ mnemonic, network: NETWORK });
+  if (seller.sellerAddress !== expectedAddress) {
+    throw new Error(
+      `the Masumi seller key derives ${seller.sellerAddress}, not ${expectedAddress}`,
+    );
+  }
+  return seller;
 }
 
 export interface ExactRouteOptions {
@@ -60,6 +104,58 @@ export function exactCardanoRoute(options: ExactRouteOptions): RouteConfig {
     description: options.description,
     mimeType: options.mimeType ?? "application/json",
   };
+}
+
+export interface MasumiRouteOptions {
+  price: { amount: string; asset: string } | DynamicPrice;
+  description: string;
+  mimeType?: string;
+  l1Confirmations?: number;
+}
+
+/**
+ * A Masumi escrow route template (PLAN 4.8): payTo is the escrow address and `extra` carries
+ * only template keys. The scheme signs a fresh seller quote for every unpaid 402.
+ */
+export function masumiRoute(options: MasumiRouteOptions): RouteConfig {
+  return {
+    accepts: {
+      scheme: "exact",
+      network: NETWORK,
+      payTo: masumiEscrowAddress(NETWORK),
+      price: options.price,
+      maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
+      extra: {
+        assetTransferMethod: "masumi",
+        confirmationPolicy: { l1Confirmations: options.l1Confirmations ?? 0 },
+      },
+    },
+    description: options.description,
+    mimeType: options.mimeType ?? "application/json",
+  };
+}
+
+/**
+ * The library checks a template only when a request arrives (a bad one turns every call into
+ * a 500), so the market calls this at startup and refuses to boot instead.
+ */
+export function assertMasumiRoute(route: RouteConfig, sample: { amount: string; asset: string }) {
+  const accepts = Array.isArray(route.accepts) ? route.accepts : [route.accepts];
+  if (accepts.length !== 1) throw new Error("a Masumi route offers exactly one payment option");
+  const [option] = accepts as [(typeof accepts)[number]];
+  if (typeof option.payTo !== "string") throw new Error("a Masumi route needs a static payTo");
+  assertMasumiTemplate(
+    {
+      scheme: option.scheme,
+      network: option.network,
+      asset: sample.asset,
+      amount: sample.amount,
+      payTo: option.payTo,
+      maxTimeoutSeconds: option.maxTimeoutSeconds ?? MAX_TIMEOUT_SECONDS,
+      extra: option.extra ?? {},
+    },
+    {},
+  );
 }
 
 /**
