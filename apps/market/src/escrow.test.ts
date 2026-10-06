@@ -286,6 +286,8 @@ describe("POST /api/escrow-jobs/:offerId", () => {
       "escrow.locked",
       "receipt.issued",
     ]);
+    const settling = mine.find((e) => e.type === "payment.settling");
+    expect(settling?.data).toMatchObject({ transferMethod: "masumi" });
     const verified = mine.find((e) => e.type === "payment.verified");
     expect(verified?.data).toMatchObject({ payTo: ESCROW, transferMethod: "masumi" });
     const locked = mine.find((e) => e.type === "escrow.locked");

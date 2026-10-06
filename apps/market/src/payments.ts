@@ -167,9 +167,13 @@ export function createMarketPayments(
 
   attachPaymentHooks(server, operations, {
     keyOf: paymentKey,
-    onSettling: ({ txHash, key }) => {
-      log.info({ txHash, key }, "payment settling");
-      emit(key, { type: "payment.settling", data: { txHash } });
+    onSettling: ({ txHash, key, requirements }) => {
+      const masumi = requirements.extra?.assetTransferMethod === "masumi";
+      log.info({ txHash, key }, masumi ? "locking in escrow" : "payment settling");
+      emit(key, {
+        type: "payment.settling",
+        data: { txHash, transferMethod: masumi ? "masumi" : "default" },
+      });
     },
     onSettled: ({ txHash, key, receipt, requirements, paymentPayload }) => {
       const what = receipt.transferMethod === "masumi" ? "locked in escrow" : "payment settled";
