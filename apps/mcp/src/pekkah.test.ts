@@ -6,7 +6,9 @@ import {
   RUN_ID_HEADER,
   type WorkerSnapshot,
 } from "@pekkah/protocol";
+import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
+import { pngToJpeg } from "./jpeg.js";
 import { choose, type Deps, generateImage, marketText, PurchaseBook } from "./pekkah.js";
 
 const ADDR_A = `addr_test1q${"pzry9x8gf2tvdw0s3jn54khce6mua7l".repeat(2).slice(0, 57)}`;
@@ -81,7 +83,13 @@ const worker: WorkerSnapshot = {
   lastSeenAt: now,
 };
 
-const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+/** A real 8x8 PNG, so the tool can turn it into a JPEG. */
+function tinyPng(): Buffer {
+  const png = new PNG({ width: 8, height: 8 });
+  for (let i = 0; i < png.data.length; i += 4) png.data.set([200, 80, 40, 255], i);
+  return PNG.sync.write(png);
+}
+const PNG_BYTES = tinyPng();
 
 function setup(quotes: Quote[], buys: Partial<BuyResult>[]) {
   const calls = {
@@ -97,7 +105,7 @@ function setup(quotes: Quote[], buys: Partial<BuyResult>[]) {
       return new Response(JSON.stringify(quotes.shift()));
     }
     if (url === `${MARKET}/api/results/job1`)
-      return new Response(PNG, { headers: { "content-type": "image/png" } });
+      return new Response(PNG_BYTES, { headers: { "content-type": "image/png" } });
     if (url === `${MARKET}/api/workers`) return new Response(JSON.stringify([worker]));
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
@@ -143,14 +151,20 @@ describe("pekkah_generate_image", () => {
     const { deps, calls } = setup([quote()], [paid]);
     const result = await generateImage({ prompt: "a lighthouse at dusk", maxUsd: 0.05 }, deps);
     expect(result.isError).toBeUndefined();
-    expect(result.content[0]).toEqual({
-      type: "image",
-      data: PNG.toString("base64"),
-      mimeType: "image/png",
-    });
+    // Sent as a JPEG (MCP clients drop large results); the PNG stays linked in the receipt.
+    const image = result.content[0];
+    expect(image?.type).toBe("image");
+    if (image?.type !== "image") throw new Error("no image");
+    expect(image.mimeType).toBe("image/jpeg");
+    expect(Buffer.from(image.data, "base64").subarray(0, 3)).toEqual(
+      Buffer.from([0xff, 0xd8, 0xff]),
+    );
     const receipt = result.content[1];
     expect(receipt?.type === "text" && receipt.text).toContain(
       `https://preprod.cardanoscan.io/transaction/${TX}`,
+    );
+    expect(receipt?.type === "text" && receipt.text).toContain(
+      `Full PNG: ${MARKET}/api/results/job1 (sha256 ${SHA})`,
     );
     // The 402 must match the offer my agent took: worker A's address, $0.05, tUSDM.
     expect(calls.buy[0]?.expect).toEqual({
@@ -299,5 +313,18 @@ describe("PurchaseBook", () => {
     expect(result?.content[0]?.type === "text" && result.content[0].text).toContain(
       "blockfrost down",
     );
+  });
+});
+
+describe("pngToJpeg", () => {
+  it("turns a PNG into a smaller JPEG of the same size", () => {
+    const png = new PNG({ width: 64, height: 64 });
+    for (let i = 0; i < png.data.length; i += 4) png.data.set([i % 256, 120, 200, 255], i);
+    const jpeg = pngToJpeg(PNG.sync.write(png));
+    expect(jpeg.subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
+    // SOF0 carries height then width.
+    const sof = jpeg.indexOf(Buffer.from([0xff, 0xc0]));
+    expect(jpeg.readUInt16BE(sof + 5)).toBe(64);
+    expect(jpeg.readUInt16BE(sof + 7)).toBe(64);
   });
 });

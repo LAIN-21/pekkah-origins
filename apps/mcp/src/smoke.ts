@@ -33,7 +33,7 @@ for (const c of market.content as { type: string; text?: string }[]) {
   if (c.type === "text") console.log(c.text);
 }
 
-type Content = { type: string; text?: string; data?: string }[];
+type Content = { type: string; text?: string; data?: string; mimeType?: string }[];
 
 if (values.buy) {
   // Like Claude: when the purchase is still settling, ask for it again by run id.
@@ -53,10 +53,11 @@ if (values.buy) {
   for (const c of result.content as Content) {
     if (c.type === "text") console.log(c.text);
     if (c.type === "image" && c.data) {
-      const file = join(appDir, "..", "..", "results", "mcp-smoke.png");
+      const name = `mcp-smoke.${c.mimeType === "image/jpeg" ? "jpg" : "png"}`;
+      const file = join(appDir, "..", "..", "results", name);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, Buffer.from(c.data, "base64"));
-      console.log(`image: ${c.data.length} base64 chars, saved to results/mcp-smoke.png`);
+      console.log(`image: ${c.mimeType}, ${c.data.length} base64 chars, saved to results/${name}`);
     }
   }
   if (result.isError) process.exitCode = 1;

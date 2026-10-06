@@ -14,6 +14,7 @@ import {
   WorkerSnapshot,
 } from "@pekkah/protocol";
 import { z } from "zod";
+import { pngToJpeg } from "./jpeg.js";
 
 // The two tools (PLAN, B1). Everything a tool says comes from the market's answers and
 // the payment's outcome; nothing is guessed. My agent pays only after the job delivers:
@@ -215,24 +216,28 @@ export async function generateImage(
       { jobId: job.jobId, workerId: job.workerId, txHash: job.txHash, totalMs },
       { runId, jobId: job.jobId },
     );
+    const resultUrl = `${deps.marketUrl}${job.resultUrl}`;
     const receipt = [
       `Paid ${formatUsdAtomic(offer.priceAtomic)} in test tUSDM to worker ${job.workerId}, the GPU that made the image, after it was delivered.`,
       `Transaction: ${explorerTxUrl(job.txHash)}`,
-      `Made in ${(job.durationMs / 1000).toFixed(1)} s on ${job.workerId}; sha256 ${job.sha256}.`,
+      `Made in ${(job.durationMs / 1000).toFixed(1)} s on ${job.workerId}. Full PNG: ${resultUrl} (sha256 ${job.sha256}).`,
       "Cardano preprod: test tokens, no real money.",
     ].join("\n");
     // Paid by now: whatever happens to the download, the receipt goes back.
     try {
-      const png = await f(`${deps.marketUrl}${job.resultUrl}`, {
-        signal: AbortSignal.timeout(30_000),
-      });
+      const png = await f(resultUrl, { signal: AbortSignal.timeout(30_000) });
       if (!png.ok) {
         return {
           content: [text(`${receipt}\n(The image couldn't be fetched: HTTP ${png.status}.)`)],
         };
       }
-      const data = Buffer.from(await png.arrayBuffer()).toString("base64");
-      return { content: [{ type: "image", data, mimeType: job.mime }, text(receipt)] };
+      const bytes = Buffer.from(await png.arrayBuffer());
+      // MCP clients drop large results, so the image travels as a JPEG; the PNG stays linked.
+      const image =
+        job.mime === "image/png"
+          ? { data: pngToJpeg(bytes).toString("base64"), mimeType: "image/jpeg" }
+          : { data: bytes.toString("base64"), mimeType: job.mime };
+      return { content: [{ type: "image", ...image }, text(receipt)] };
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       return { content: [text(`${receipt}\n(The image couldn't be fetched: ${why}.)`)] };
