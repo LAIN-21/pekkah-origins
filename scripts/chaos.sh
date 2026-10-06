@@ -25,7 +25,7 @@ compose=$(remote_compose "$role")
 
 case "$action" in
   kill-job)
-    remote "$host" "ids=\$(docker ps -q --filter label=pekkah.job); if [ -z \"\$ids\" ]; then echo 'no job container is running' >&2; exit 1; fi; docker kill \$ids >/dev/null && echo \"killed job container(s): \$(docker ps -a --filter label=pekkah.job --format '{{.Names}}' | tr '\\n' ' ')\""
+    remote "$host" "ids=\$(docker ps -q --filter label=pekkah.job); if [ -z \"\$ids\" ]; then echo 'no job container is running' >&2; exit 1; fi; names=\$(docker ps --filter label=pekkah.job --format '{{.Names}}' | tr '\\n' ' '); docker kill \$ids >/dev/null && echo \"killed job container(s): \$names\""
     ;;
   stop-worker)
     remote "$host" "cd /opt/pekkah/worker && $compose stop worker" && echo "worker $role stopped at $(date +%H:%M:%S)"

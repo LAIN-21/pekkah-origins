@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type JobEvent, RunLog, type ScenarioName } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
@@ -43,9 +43,12 @@ export class RunStore {
         const [oldest] = this.runs.keys();
         if (oldest === undefined) break;
         this.runs.delete(oldest);
+        this.remove(oldest);
       }
     }
-    if (run.events.length < MAX_EVENTS_PER_RUN) run.events.push(event);
+    // A run's outcome is always kept, even past the cap: a replay must show how it ended.
+    const terminal = event.type === "run.completed" || event.type === "run.failed";
+    if (run.events.length < MAX_EVENTS_PER_RUN || terminal) run.events.push(event);
     if (event.type === "run.started") {
       run.scenario = event.data.scenario;
       run.startedAt = event.ts;
@@ -82,24 +85,44 @@ export class RunStore {
     );
   }
 
-  private load(): void {
+  /** Deletes a run's file once memory no longer keeps it, so files follow the same limit. */
+  private remove(runId: string): void {
+    const timer = this.pending.get(runId);
+    if (timer) clearTimeout(timer);
+    this.pending.delete(runId);
     if (!this.dir) return;
     try {
-      const dir = join(this.dir, "runs");
-      const runs = readdirSync(dir)
-        .filter((f) => f.endsWith(".json"))
-        .flatMap((f) => {
+      rmSync(join(this.dir, "runs", `${runId}.json`), { force: true });
+    } catch {
+      // Best effort, like writing.
+    }
+  }
+
+  private load(): void {
+    if (!this.dir) return;
+    const dir = join(this.dir, "runs");
+    let files: string[];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    } catch {
+      return; // No saved runs yet.
+    }
+    // One unreadable file (say, cut short by a crash mid-write) costs only itself.
+    const runs = files
+      .flatMap((f) => {
+        try {
           const parsed = RunLog.safeParse(JSON.parse(readFileSync(join(dir, f), "utf8")));
           return parsed.success ? [parsed.data] : [];
-        })
-        .sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""))
-        .slice(-KEEP_RUNS);
-      for (const run of runs) {
-        this.runs.set(run.runId, { ...run, events: run.events });
-        if (run.startedAt) this.latestRunId = run.runId;
-      }
-    } catch {
-      // No saved runs yet.
+        } catch {
+          this.log.warn({ file: f }, "skipping an unreadable run log");
+          return [];
+        }
+      })
+      .sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
+    for (const old of runs.slice(0, -KEEP_RUNS)) this.remove(old.runId);
+    for (const run of runs.slice(-KEEP_RUNS)) {
+      this.runs.set(run.runId, { ...run, events: run.events });
+      if (run.startedAt) this.latestRunId = run.runId;
     }
   }
 }

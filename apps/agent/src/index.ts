@@ -8,6 +8,7 @@ import {
   AssetId,
   DEFAULT_ASSET,
   explorerTxUrl,
+  IMAGE_PROMPTS,
   PEKKAH_VERSION,
   RUN_ID_HEADER,
   ScenarioName,
@@ -78,11 +79,19 @@ async function cli(argv: string[]): Promise<number> {
       console.error(`usage: agent run <${ScenarioName.options.join("|")}> [--market <url>]`);
       return 2;
     }
+    const promptIndex = values.prompt === undefined ? undefined : Number(values.prompt);
+    if (
+      values.prompt !== undefined &&
+      (!/^\d+$/.test(values.prompt) || IMAGE_PROMPTS[promptIndex ?? -1] === undefined)
+    ) {
+      console.error(`usage: --prompt takes 0 to ${IMAGE_PROMPTS.length - 1}`);
+      return 2;
+    }
     const { market, buyer } = connect(marketUrl);
     const outcome = await runScenario({
       scenario: scenario.data,
       runId: nextRunId(),
-      ...(values.prompt !== undefined ? { promptIndex: Number(values.prompt) } : {}),
+      ...(promptIndex !== undefined ? { promptIndex } : {}),
       buyer,
       market,
       print: (line) => console.log(line),

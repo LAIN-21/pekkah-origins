@@ -66,6 +66,7 @@ const facilitator: FacilitatorClient = {
 
 let url = "";
 let bus: EventBus;
+let jobs: JobStore;
 let worker: WebSocket;
 const dispatches: string[] = [];
 let failNext = false;
@@ -74,7 +75,7 @@ const cleanup: (() => void)[] = [];
 beforeAll(async () => {
   bus = new EventBus(log);
   const offers = new OfferStore();
-  const jobs = new JobStore();
+  jobs = new JobStore();
   const runs = new RunStore(bus, null, log);
   const payments = createMarketPayments({ facilitator }, bus, log, { jobs, offers });
   const registry = new WorkerRegistry({ tokens: parseWorkerTokens(`B:${TOKEN}`), bus, log });
@@ -262,6 +263,35 @@ describe("POST /api/jobs/:offerId", () => {
     ]);
     const job = await (await fetch(`${url}/api/jobs/by-tx/${tx.txHash}`)).json();
     expect(job).toMatchObject({ status: "delivered", paid: true, offerId: offer.offerId });
+  });
+
+  it("refuses a replay whose job was trimmed from memory, and keeps the payment settled", async () => {
+    const offer = await quote("01RUNT");
+    const { tx, post } = await pay(offer.offerId, 51);
+    expect((await post()).status).toBe(200);
+    // Push the job out of the store's 200-job window.
+    for (let i = 0; i < 200; i++) {
+      jobs.add({
+        jobId: `01FILL${String(i).padStart(4, "0")}`,
+        offerId: `fill${i}`,
+        workerId: "B",
+        workload: "fractal",
+        txHash: (i + 1).toString(16).padStart(64, "0"),
+        status: "delivered",
+        startedAt: new Date().toISOString(),
+        paid: true,
+        done: Promise.resolve(),
+      });
+    }
+    const dispatched = dispatches.length;
+    const replay = await post();
+    expect(replay.status).toBe(410);
+    expect(await replay.json()).toEqual({ error: "job_expired" });
+    expect(dispatches.length).toBe(dispatched);
+    const canceled = bus
+      .latest()
+      .filter((e) => e.type === "payment.canceled" && e.data.txHash === tx.txHash);
+    expect(canceled).toEqual([]);
   });
 
   it("refuses a second payment for a bought offer", async () => {

@@ -125,12 +125,19 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
     `job        ${job.jobId} on ${job.workerId}: ${(job.durationMs / 1000).toFixed(1)} s, sha256 ${job.sha256}`,
   );
   if (o.resultsDir) {
-    const data = await o.market.result(job.resultUrl);
-    if (data) {
-      const file = join(o.resultsDir, `${job.jobId}.${EXT[job.mime] ?? "bin"}`);
-      mkdirSync(o.resultsDir, { recursive: true });
-      writeFileSync(file, data);
-      o.print(`result     ${file}`);
+    // The job is paid and delivered whatever happens here; the result stays on the market.
+    try {
+      const data = await o.market.result(job.resultUrl);
+      if (data) {
+        const file = join(o.resultsDir, `${job.jobId}.${EXT[job.mime] ?? "bin"}`);
+        mkdirSync(o.resultsDir, { recursive: true });
+        writeFileSync(file, data);
+        o.print(`result     ${file}`);
+      }
+    } catch (err) {
+      o.print(
+        `note       could not save the result (${err instanceof Error ? err.message : String(err)}); it stays at ${o.market.url}${job.resultUrl}`,
+      );
     }
   }
   const totalMs = Date.now() - started;

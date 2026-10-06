@@ -217,7 +217,15 @@ export function registerPaidJobRoute(app: express.Express, o: PaidJobRouteOption
         });
       }
       // One job per payment: a resumed or replayed request awaits or returns the same job.
-      const job = o.jobs.byTxHash(txHash) ?? startJob(record, txHash, runId);
+      // If that job was already trimmed from memory, refuse rather than run a second one.
+      const existing = o.jobs.byTxHash(txHash);
+      const startedBefore = (o.operations.get(txHash)?.data as { jobId?: string } | undefined)
+        ?.jobId;
+      if (!existing && startedBefore) {
+        res.status(410).json({ error: "job_expired" });
+        return;
+      }
+      const job = existing ?? startJob(record, txHash, runId);
       await job.done;
       if (job.status === "delivered") {
         res.json(resultBody(job));
