@@ -29,6 +29,7 @@ function snapshot(
   id: string,
   prices: Partial<Record<WorkloadName, number>>,
   spi: number,
+  selling = true,
 ): WorkerSnapshot {
   return {
     workerId: id,
@@ -53,6 +54,7 @@ function snapshot(
     },
     warm: ["fractal"],
     lastSeenAt: AT,
+    selling,
   };
 }
 const workers = [
@@ -61,11 +63,11 @@ const workers = [
   snapshot("C", { fractal: 0.02 }, 11e-9),
 ];
 
-async function start() {
+async function start(list: WorkerSnapshot[] = workers) {
   const bus = new EventBus(log);
   const offers = new OfferStore();
   const app = express();
-  registerQuoteRoute(app, { workers: () => workers, offers, bus, asset: DEFAULT_ASSET, log });
+  registerQuoteRoute(app, { workers: () => list, offers, bus, asset: DEFAULT_ASSET, log });
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   cleanup.push(() => server.close());
@@ -107,6 +109,24 @@ describe("POST /api/quote", () => {
       ["A", "over_budget"],
       ["C", "too_slow"],
     ]);
+  });
+
+  it("passes only selling workers to the matcher: probation changes no quote", async () => {
+    const probation = snapshot("P", { fractal: 0.001 }, 1e-10, false);
+    const strip = (q: Quote) => ({
+      offers: q.offers.map((o) => [o.workerId, o.kind, o.priceAtomic, o.estSec]),
+      counter: q.counterOffer && [q.counterOffer.workerId, q.counterOffer.priceAtomic],
+      market: q.marketPriceUsd,
+      rejected: q.rejected,
+    });
+    const before = await start();
+    const withP = await start([...workers, probation]);
+    for (const name of ["cpu-counter", "cpu-tight", "failover"] as const) {
+      const a = Quote.parse(await (await before.quote(scenarioRequest(name))).json());
+      const b = Quote.parse(await (await withP.quote(scenarioRequest(name))).json());
+      expect(strip(b), name).toEqual(strip(a));
+      expect(JSON.stringify(b)).not.toContain('"P"');
+    }
   });
 
   it("refuses an invalid request and ignores a malformed run id", async () => {

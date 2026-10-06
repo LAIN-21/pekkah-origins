@@ -34,7 +34,11 @@ beforeAll(async () => {
 });
 afterAll(() => server.close());
 
-function controller(now: { t: number }, dailyRuns = 40) {
+function controller(
+  now: { t: number },
+  dailyRuns = 40,
+  liveRun?: (now: number) => string | undefined,
+) {
   const bus = new EventBus(log);
   let changes = 0;
   const demo = new DemoController({
@@ -47,6 +51,7 @@ function controller(now: { t: number }, dailyRuns = 40) {
     onChange: () => {
       changes += 1;
     },
+    ...(liveRun ? { liveRun } : {}),
     now: () => now.t,
   });
   const end = (runId: string) =>
@@ -60,6 +65,27 @@ function controller(now: { t: number }, dailyRuns = 40) {
 }
 
 describe("the run button", () => {
+  it("answers 409 while another client's run is under way, even with DEMO_TOKEN", async () => {
+    const now = { t: Date.parse("2026-10-07T03:00:00Z") };
+    let live: string | undefined = "01MCPRUN";
+    const asked: number[] = [];
+    const { demo } = controller(now, 40, (t) => {
+      asked.push(t);
+      return live;
+    });
+    const sent = received.length;
+    expect(await demo.start({ scenario: "cpu-tight" }, false)).toEqual({
+      status: 409,
+      body: { error: "run_in_progress", runId: "01MCPRUN" },
+    });
+    expect((await demo.start({ scenario: "gpu-image" }, true)).status).toBe(409);
+    expect(received.length).toBe(sent);
+    expect(asked.at(-1)).toBe(now.t);
+    live = undefined;
+    expect((await demo.start({ scenario: "cpu-tight" }, false)).status).toBe(202);
+    demo.close();
+  });
+
   it("starts a public run, hands it to the agent, and refuses a second one meanwhile", async () => {
     const now = { t: Date.parse("2026-10-07T02:00:00Z") };
     const { demo, end, changes } = controller(now);

@@ -22,6 +22,7 @@ import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
 import { registerReadRoutes } from "./routes.js";
 import { RunStore } from "./runs.js";
+import { testPng } from "./test-support/png.js";
 import { parseWorkerTokens, WorkerRegistry } from "./workers.js";
 
 const log = createLogger("paid-test");
@@ -70,6 +71,8 @@ let jobs: JobStore;
 let worker: WebSocket;
 const dispatches: string[] = [];
 let failNext = false;
+/** The next image the fake worker sends, instead of a PNG of the requested size. */
+let nextImage: Buffer | null = null;
 const cleanup: (() => void)[] = [];
 
 beforeAll(async () => {
@@ -136,7 +139,11 @@ beforeAll(async () => {
       );
       return;
     }
-    const data = Buffer.from("png bytes");
+    let data: Buffer = Buffer.from("png bytes");
+    if (msg.workload === "image") {
+      data = nextImage ?? testPng(msg.params.size, msg.params.size);
+      nextImage = null;
+    }
     worker.send(
       JSON.stringify({
         type: "job.result",
@@ -158,13 +165,22 @@ beforeAll(async () => {
       version: "test",
       name: "Worker B",
       payTo: B_ADDR,
-      hardware: { cpuModel: "test", vcpus: 8, memGb: 16 },
-      prices: [{ workload: "fractal", usd: 0.03 }],
-      warm: ["fractal"],
+      hardware: {
+        cpuModel: "test",
+        vcpus: 8,
+        memGb: 16,
+        gpu: { name: "NVIDIA RTX 4000 Ada Generation", vramGb: 20, driver: "580.173.02" },
+      },
+      prices: [
+        { workload: "fractal", usd: 0.03 },
+        { workload: "image", usd: 0.05 },
+      ],
+      warm: ["fractal", "image"],
     }),
   );
   await new Promise((resolve) => setTimeout(resolve, 100));
   registry.setCalibration("B", {
+    image: { secImage1024x4: 7, verified: false, at: new Date().toISOString() },
     fractal: {
       overheadSec: 1,
       calibSec: 2,
@@ -180,11 +196,11 @@ afterAll(() => {
   for (const fn of cleanup) fn();
 });
 
-async function quote(runId: string) {
+async function quote(runId: string, scenario: "cpu-tight" | "gpu-image" = "cpu-tight") {
   const res = await fetch(`${url}/api/quote`, {
     method: "POST",
     headers: { "content-type": "application/json", "X-Pekkah-Run-Id": runId },
-    body: JSON.stringify(scenarioRequest("cpu-tight")),
+    body: JSON.stringify(scenarioRequest(scenario)),
   });
   const q = Quote.parse(await res.json());
   const offer = q.offers[0];
@@ -246,20 +262,21 @@ describe("POST /api/jobs/:offerId", () => {
     expect(dispatches.length - before.dispatches).toBe(1);
     expect(calls.settle - before.settle).toBe(1);
 
+    // Each event names who it comes from: the worker for its job, the chain for the payment.
     const types = bus
       .latest()
       .filter((e) => e.runId === "01RUNB")
-      .map((e) => e.type);
+      .map((e) => `${e.type} ${e.source}`);
     expect(types).toEqual([
-      "quote.issued",
-      "payment.required",
-      "payment.verified",
-      "job.dispatched",
-      "job.running",
-      "job.completed",
-      "payment.settling",
-      "payment.settled",
-      "receipt.issued",
+      "quote.issued market",
+      "payment.required market",
+      "payment.verified market",
+      "job.dispatched market",
+      "job.running worker",
+      "job.completed worker",
+      "payment.settling market",
+      "payment.settled chain",
+      "receipt.issued market",
     ]);
     const job = await (await fetch(`${url}/api/jobs/by-tx/${tx.txHash}`)).json();
     expect(job).toMatchObject({ status: "delivered", paid: true, offerId: offer.offerId });
@@ -322,12 +339,56 @@ describe("POST /api/jobs/:offerId", () => {
     expect(calls.settle).toBe(settles);
     const job = await (await fetch(`${url}/api/jobs/by-tx/${tx.txHash}`)).json();
     expect(job).toMatchObject({ status: "failed", paid: false, error: "killed" });
-    expect(
-      bus
-        .latest()
-        .filter((e) => e.runId === "01RUND")
-        .map((e) => e.type),
-    ).toContain("payment.canceled");
+    const mine = bus.latest().filter((e) => e.runId === "01RUND");
+    expect(mine.map((e) => e.type)).toContain("payment.canceled");
+    // The worker reported the failure itself.
+    expect(mine.find((e) => e.type === "job.failed")?.source).toBe("worker");
     expect((await fetch(`${url}/api/jobs/${offer.offerId}`, { method: "POST" })).status).toBe(410);
+  });
+
+  it("checks an image itself: a PNG of the requested size, recorded in job.completed", async () => {
+    const offer = await quote("01RUNI", "gpu-image");
+    const { post } = await pay(offer.offerId, 61);
+    const res = await post();
+    expect(res.status).toBe(200);
+    const completed = bus.latest().find((e) => e.runId === "01RUNI" && e.type === "job.completed");
+    expect(completed?.type === "job.completed" && completed.data.check).toEqual({
+      kind: "png",
+      width: 1024,
+      height: 1024,
+    });
+  });
+
+  it("fails an image of the wrong size: 502, nothing is settled", async () => {
+    const offer = await quote("01RUNJ", "gpu-image");
+    const { tx, post } = await pay(offer.offerId, 71);
+    nextImage = testPng(768, 768);
+    const settles = calls.settle;
+    const res = await post();
+    expect(res.status).toBe(502);
+    expect(res.headers.get("payment-response")).toBeNull();
+    expect(calls.settle).toBe(settles);
+    const job = await (await fetch(`${url}/api/jobs/by-tx/${tx.txHash}`)).json();
+    expect(job).toMatchObject({ status: "failed", paid: false });
+    const mine = bus.latest().filter((e) => e.runId === "01RUNJ");
+    const failed = mine.find((e) => e.type === "job.failed");
+    // The market decided this failure, so it is a market event.
+    expect(failed?.source).toBe("market");
+    expect(failed?.type === "job.failed" && failed.data.reason).toBe(
+      "the market's check failed: asked for a 1024×1024 PNG, got a 768×768 PNG",
+    );
+    expect(mine.map((e) => e.type)).toContain("payment.canceled");
+    expect(mine.map((e) => e.type)).not.toContain("job.completed");
+  });
+
+  it("fails an image that is not a PNG", async () => {
+    const offer = await quote("01RUNK", "gpu-image");
+    const { post } = await pay(offer.offerId, 81);
+    nextImage = Buffer.from("not an image at all");
+    expect((await post()).status).toBe(502);
+    const failed = bus.latest().find((e) => e.runId === "01RUNK" && e.type === "job.failed");
+    expect(failed?.type === "job.failed" && failed.data.reason).toContain(
+      "got something that is not a PNG",
+    );
   });
 });

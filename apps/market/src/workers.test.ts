@@ -6,6 +6,7 @@ import { createLogger } from "@pekkah/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { EventBus } from "./events.js";
+import { testPng } from "./test-support/png.js";
 import { parseWorkerTokens, WorkerRegistry } from "./workers.js";
 
 const TOKEN = "k".repeat(32);
@@ -16,7 +17,7 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
-async function market(silentMs = 15_000) {
+async function market(silentMs = 15_000, escrowSeller?: string) {
   const bus = new EventBus(log);
   const calibrations: string[] = [];
   const registry = new WorkerRegistry({
@@ -24,6 +25,7 @@ async function market(silentMs = 15_000) {
     bus,
     log,
     silentMs,
+    ...(escrowSeller ? { escrowSeller } : {}),
     calibrate: (_r, workerId, workload) => void calibrations.push(`${workerId}:${workload}`),
   });
   const server: Server = createServer();
@@ -81,6 +83,31 @@ describe("worker registry", () => {
     expect(registry.snapshots()).toEqual([]);
   });
 
+  it("refuses a hello without a token", async () => {
+    const { url, registry } = await market();
+    const w = await worker(url, TOKEN, { token: undefined });
+    expect(await w.next("error")).toMatchObject({ type: "error", code: "unauthorized" });
+    await new Promise((resolve) => w.ws.once("close", resolve));
+    expect(registry.snapshots()).toEqual([]);
+  });
+
+  it("refuses at once a hello past the protocol's bounds, naming the field", async () => {
+    const { url, registry } = await market();
+    const started = Date.now();
+    const w = await worker(url, TOKEN, {
+      hardware: { cpuModel: "x".repeat(81), vcpus: 8, memGb: 16 },
+    });
+    const error = await w.next("error");
+    expect(error).toMatchObject({ type: "error", code: "invalid_hello" });
+    expect(error.type === "error" && error.message).toContain("hardware.cpuModel");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await new Promise((resolve) => w.ws.once("close", resolve));
+    expect(registry.snapshots()).toEqual([]);
+    const typo = await worker(url, TOKEN, { hardware: { cpuModel: 7, vcpus: 8, memGb: 16 } });
+    const second = await typo.next("error");
+    expect(second.type === "error" && second.message).toContain("hardware.cpuModel");
+  });
+
   it("refuses a hello whose price cannot be converted, and keeps serving", async () => {
     const { url, registry } = await market();
     const bad = await worker(url, TOKEN, { prices: [{ workload: "fractal", usd: 1e300 }] });
@@ -102,8 +129,17 @@ describe("worker registry", () => {
       status: "online",
       warm: ["fractal"],
       prices: [{ workload: "fractal", usd: 0.03, atomic: "30000" }],
+      selling: true,
+      escrowSeller: false,
     });
     expect(registry.online()).toBe(1);
+  });
+
+  it("flags the worker whose payout address is the Masumi seller's", async () => {
+    const { url, registry } = await market(15_000, ADDR);
+    const w = await worker(url);
+    await w.next("welcome");
+    expect(registry.snapshots()[0]).toMatchObject({ selling: true, escrowSeller: true });
   });
 
   it("dispatches a job, checks the hash itself, and emits job events", async () => {
@@ -135,13 +171,55 @@ describe("worker registry", () => {
     });
     const outcome = await pending;
     expect(outcome).toMatchObject({ ok: true, sha256, workerId: "B" });
-    const types = bus.latest().map((e) => `${e.type}${e.dev ? " dev" : ""}`);
+    const types = bus.latest().map((e) => `${e.type} ${e.source}${e.dev ? " dev" : ""}`);
     expect(types).toEqual([
-      "worker.online",
-      "job.dispatched dev",
-      "job.running dev",
-      "job.completed dev",
+      "worker.online market",
+      "job.dispatched market dev",
+      "job.running worker dev",
+      "job.completed worker dev",
     ]);
+  });
+
+  it("checks an image result's PNG header against the requested size", async () => {
+    const { url, registry, bus } = await market();
+    const w = await worker(url);
+    await w.next("welcome");
+    const run = async (data: Buffer) => {
+      const pending = registry.dispatch("B", {
+        workload: "image",
+        params: { prompt: "a lighthouse at dusk", seed: 7, size: 1024, steps: 4 },
+        kind: "dev",
+        deadlineSec: 30,
+      });
+      const dispatch = await w.next("job.dispatch");
+      if (dispatch.type !== "job.dispatch") throw new Error("expected a dispatch");
+      w.send({
+        type: "job.result",
+        jobId: dispatch.jobId,
+        ok: true,
+        mime: "image/png",
+        sha256: createHash("sha256").update(data).digest("hex"),
+        bytes: data.length,
+        dataBase64: data.toString("base64"),
+        durationMs: 5,
+      });
+      return pending;
+    };
+    expect(await run(testPng(1024, 1024))).toMatchObject({
+      ok: true,
+      check: { kind: "png", width: 1024, height: 1024 },
+    });
+    const completed = bus.latest().find((e) => e.type === "job.completed");
+    expect(completed?.type === "job.completed" && completed.data.check).toEqual({
+      kind: "png",
+      width: 1024,
+      height: 1024,
+    });
+    expect(await run(testPng(1024, 768))).toMatchObject({
+      ok: false,
+      error: "the market's check failed: asked for a 1024×1024 PNG, got a 1024×768 PNG",
+    });
+    expect(bus.latest().at(-1)).toMatchObject({ type: "job.failed", source: "market" });
   });
 
   it("refuses a result whose bytes do not match its hash", async () => {
@@ -170,7 +248,7 @@ describe("worker registry", () => {
   });
 
   it("fails a running job when the worker disconnects, and marks it offline", async () => {
-    const { url, registry } = await market();
+    const { url, registry, bus } = await market();
     const w = await worker(url);
     await w.next("welcome");
     const pending = registry.dispatch("B", {
@@ -182,6 +260,8 @@ describe("worker registry", () => {
     await w.next("job.dispatch");
     w.ws.terminate();
     expect(await pending).toMatchObject({ ok: false, error: "worker disconnected" });
+    // The market saw the disconnect; the worker reported nothing.
+    expect(bus.latest().find((e) => e.type === "job.failed")?.source).toBe("market");
     expect(registry.snapshots()[0]?.status).toBe("offline");
     expect(
       await registry.dispatch("B", {

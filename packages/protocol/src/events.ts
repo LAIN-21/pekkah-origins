@@ -18,7 +18,7 @@ import {
   WorkerId,
 } from "./primitives.js";
 import { ComputeRequest } from "./request.js";
-import { ScenarioName } from "./scenarios.js";
+import { RunScenario } from "./scenarios.js";
 import { WorkloadName } from "./workloads.js";
 
 // Events (PLAN 5.2). The UI shows only states the backend emitted, in the order they happened.
@@ -49,7 +49,12 @@ function event<T extends string, D extends z.ZodTypeAny>(type: T, data: D) {
 
 export const RunStartedEvent = event(
   "run.started",
-  z.object({ scenario: ScenarioName, request: ComputeRequest }),
+  z.object({
+    scenario: RunScenario,
+    request: ComputeRequest,
+    /** Who started the run, for example "Claude via MCP". */
+    client: z.string().min(1).max(40).optional(),
+  }),
 );
 export const AgentDecisionEvent = event(
   "agent.decision",
@@ -58,6 +63,13 @@ export const AgentDecisionEvent = event(
     chosen: z.union([CounterOffer, Offer]).optional(),
     /** Plain-language reasons, shown as they are. */
     reasons: z.array(z.string()),
+    /**
+     * Present only when my agent states that I approved a price above my budget. It is my
+     * agent's statement, never proof that I approved. The wallet's spend caps stay the limit.
+     */
+    overBudget: z
+      .object({ budgetUsd: z.number().positive(), priceUsd: z.number().positive() })
+      .optional(),
   }),
 );
 export const PaymentSignedEvent = event(
@@ -136,6 +148,14 @@ export const JobCompletedEvent = event(
     sha256: Sha256,
     mime: z.string().optional(),
     bytes: z.number().int().nonnegative().optional(),
+    /** The market's own check of an image result: a PNG of the requested size. */
+    check: z
+      .object({
+        kind: z.literal("png"),
+        width: z.number().int().positive(),
+        height: z.number().int().positive(),
+      })
+      .optional(),
   }),
 );
 export const JobFailedEvent = event(
@@ -202,6 +222,39 @@ export const EscrowResultSubmittedEvent = event(
     explorerUrl: z.string().url(),
   }),
 );
+/**
+ * PR-16: after the unlock time, the seller collected the price (Masumi Withdraw) and the
+ * buyer's collateral came back, seen on chain. Only now may anything say "released".
+ */
+export const EscrowReleasedEvent = event(
+  "escrow.released",
+  z.object({
+    lockTxHash: TxHash,
+    txHash: TxHash,
+    sellerAddress: CardanoAddress,
+    buyerAddress: CardanoAddress,
+    amountAtomic: AtomicAmount,
+    asset: AssetId,
+    collateralReturnLovelace: AtomicAmount,
+    explorerUrl: z.string().url(),
+  }),
+);
+/**
+ * PR-16b: the buyer took back a lock with no result (Masumi WithdrawRefund): the price and the
+ * collateral, seen on chain. Only now may anything say "refunded".
+ */
+export const EscrowRefundedEvent = event(
+  "escrow.refunded",
+  z.object({
+    lockTxHash: TxHash,
+    txHash: TxHash,
+    buyerAddress: CardanoAddress,
+    amountAtomic: AtomicAmount,
+    asset: AssetId,
+    collateralReturnLovelace: AtomicAmount,
+    explorerUrl: z.string().url(),
+  }),
+);
 
 export const JobEvent = z.discriminatedUnion("type", [
   RunStartedEvent,
@@ -229,6 +282,8 @@ export const JobEvent = z.discriminatedUnion("type", [
   WorkerCalibratedEvent,
   EscrowLockedEvent,
   EscrowResultSubmittedEvent,
+  EscrowReleasedEvent,
+  EscrowRefundedEvent,
 ]);
 export type JobEvent = z.infer<typeof JobEvent>;
 export type EventType = JobEvent["type"];
@@ -247,6 +302,30 @@ export const AGENT_EVENT_TYPES = [
   "run.failed",
 ] as const satisfies readonly EventType[];
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
+
+/** What the chain shows: the market emits these once the facilitator sees the transaction. */
+export const CHAIN_EVENT_TYPES = [
+  "payment.settled",
+  "escrow.locked",
+  "escrow.result_submitted",
+  "escrow.released",
+  "escrow.refunded",
+] as const satisfies readonly EventType[];
+
+/**
+ * What a worker reports about its job. A failure the market decides (a missed deadline, a
+ * disconnect, a result that fails the market's checks) is a market event.
+ */
+export const WORKER_EVENT_TYPES = [
+  "job.running",
+  "job.progress",
+  "job.completed",
+  "job.failed",
+] as const satisfies readonly EventType[];
+
+export function chainSourced(type: EventType): boolean {
+  return (CHAIN_EVENT_TYPES as readonly string[]).includes(type);
+}
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 

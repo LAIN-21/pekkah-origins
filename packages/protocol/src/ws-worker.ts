@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RESULT_MAX_BYTES } from "./constants.js";
+import { HELLO_LIMITS, RESULT_MAX_BYTES } from "./constants.js";
 import { JobKind } from "./events.js";
 import { CardanoAddress, Id, IsoDate, Sha256, WorkerId } from "./primitives.js";
 import { WorkerHardware, WorkerUtil } from "./worker.js";
@@ -13,15 +13,18 @@ import { FractalParams, ImageParams, WorkloadName } from "./workloads.js";
 export const HelloMsg = z.object({
   type: z.literal("hello"),
   workerId: WorkerId,
-  token: z.string().min(1),
+  /** WORKER_TOKENS[workerId] for an allowlisted worker. PR-17: without one, probation. */
+  token: z.string().min(1).optional(),
   /** The worker's git sha. */
-  version: z.string(),
-  name: z.string().min(1).max(64),
+  version: z.string().max(HELLO_LIMITS.version),
+  name: z.string().min(1).max(HELLO_LIMITS.name),
   /** The worker's PAYOUT_ADDRESS. */
   payTo: CardanoAddress,
   hardware: WorkerHardware,
-  prices: z.array(z.object({ workload: WorkloadName, usd: z.number().positive() })),
-  schedule: z.string().optional(),
+  prices: z
+    .array(z.object({ workload: WorkloadName, usd: z.number().positive() }))
+    .max(HELLO_LIMITS.prices),
+  schedule: z.string().max(HELLO_LIMITS.schedule).optional(),
   warm: z.array(WorkloadName),
 });
 export type HelloMsg = z.infer<typeof HelloMsg>;

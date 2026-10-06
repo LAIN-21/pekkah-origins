@@ -7,6 +7,7 @@ import {
   type ResourceServerOptions,
 } from "@pekkah/payments";
 import {
+  chainSourced,
   type JobEventInput,
   MAX_TIMEOUT_SECONDS,
   NETWORK,
@@ -60,13 +61,17 @@ export function createMarketPayments(
   const server = createResourceServer({ ...options, facilitator });
   const operations = new PaymentOperations();
 
-  /** Payment events carry the run of the offer they pay for; smoke payments are dev events. */
+  /**
+   * Payment events carry the run of the offer they pay for; smoke payments are dev events.
+   * What the chain shows (a settlement, a lock, a result, a release) is a chain event: the
+   * market emits it only once the facilitator sees the transaction on chain.
+   */
   const emit = (key: string, event: Omit<JobEventInput, "source">) => {
     const offerId = offerIdOfKey(key);
     const runId = offerId ? stores.offers.get(offerId)?.runId : undefined;
     bus.emit({
       ...event,
-      source: "market",
+      source: chainSourced(event.type) ? "chain" : "market",
       ...(runId ? { runId } : {}),
       ...(isDev(key) ? { dev: true } : {}),
     } as JobEventInput);
