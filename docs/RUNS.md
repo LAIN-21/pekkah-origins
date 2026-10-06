@@ -44,3 +44,18 @@ Written by `scripts/demo-check.sh --escrow` from the run's events (PLAN 12.3).
 | Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de)); pay by 2026-10-06 16:44:43, submit result 2026-10-06 16:59:43, unlock 2026-10-06 17:19:43, dispute 2026-10-06 17:39:43 (SGT) |
 | Status | Locked in Masumi escrow. Release, refund and dispute tooling is my next step. |
 
+### Masumi evidence: gpu-image-escrow, 2026-10-06 18:24:54 SGT
+
+| Field | Value |
+| --- | --- |
+| Run | `gpu-image-escrow`, run `01M48BXBXCXQ4RPXD9RFB9WZFY`, 2026-10-06 18:24:54 SGT |
+| Compute | worker A (NVIDIA RTX 4000 Ada Generation 20 GB, 8 vCPU INTEL(R) XEON(R) GOLD 6548Y+, 31.3 GB RAM), image, 6.9 s, sha256 `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| Lock tx | [`ae0a2d862c7b62a8cf4965bd8e24aa9be1108464ee37e06110b079a37b517099`](https://preprod.cardanoscan.io/transaction/ae0a2d862c7b62a8cf4965bd8e24aa9be1108464ee37e06110b079a37b517099) |
+| Escrow address | `addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g` (Masumi `vested_pay` V2, preprod) |
+| Seller | worker A, `addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga` (`terms.sellerAddress`) |
+| Request hash | `3632e82ae498d157e871540f424e8aa11803d41e0d59067fe6621e64b5c2811f` (`terms.inputHash`; recomputed from the quoted request: match) |
+| Amount and asset | 0.05 tUSDM (`e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`) plus 4.00399 tADA collateral |
+| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/ae0a2d862c7b62a8cf4965bd8e24aa9be1108464ee37e06110b079a37b517099)); pay by 2026-10-06 18:34:58, submit result 2026-10-06 18:49:58, unlock 2026-10-06 19:09:58, dispute 2026-10-06 19:29:58 (SGT) |
+| Result submitted | [`e949491a5e07cf65236244e7c8381c3871c87957539e0e8dd3f645e56661baca`](https://preprod.cardanoscan.io/transaction/e949491a5e07cf65236244e7c8381c3871c87957539e0e8dd3f645e56661baca): Masumi SubmitResult as the seller. The escrow datum now holds the result hash `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` (the delivered result's sha256) and the state ResultSubmitted; the funds stay locked |
+| Status | Locked in Masumi escrow. Release, refund and dispute tooling is my next step. |
+

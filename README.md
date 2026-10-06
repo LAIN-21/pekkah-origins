@@ -73,7 +73,7 @@ Workers need no inbound port: they dial out to the market. Each CPU job runs in 
 5. **Run.** The facilitator verifies the signed transaction. The market dispatches the job to that worker and waits for the result.
 6. **Settle.** Only after the result arrives does the facilitator broadcast the transaction and wait for it on chain. The agent gets the result and a receipt with a Cardanoscan link. If the job fails, the market's settlement never broadcasts the transaction, so nothing is charged. The market does hold the signed transaction until its TTL, so this relies on an honest market (see the honest limits); escrow removes that trust.
 
-With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Nothing is released to the worker: I built the lock, and release, refund and dispute are my next step.
+With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Then the market submits the delivered result's hash into the escrow as worker A (Masumi's `SubmitResult`, signed with Seller A's key). The funds stay locked: nothing is released to the worker. Release, refund and dispute are my next step.
 
 ## Real runs
 

@@ -5,7 +5,7 @@ import { ExactCardanoScheme } from "@x402/cardano/exact/facilitator";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { z } from "zod";
 import { createFacilitatorApp } from "./app.js";
-import { lookupTx } from "./blockfrost.js";
+import { forwardToBlockfrost, lookupTx } from "./blockfrost.js";
 
 const env = readEnv("facilitator", {
   BLOCKFROST_PROJECT_ID: z.string().min(1),
@@ -39,6 +39,7 @@ const app = createFacilitatorApp({
   facilitator,
   confirmationTimeoutMs: env.CONFIRMATION_TIMEOUT_MS,
   lookupTx: (hash, ttlSlot) => lookupTx(blockfrost, hash, ttlSlot),
+  chain: { forward: (request) => forwardToBlockfrost(blockfrost, request) },
   log,
 });
 

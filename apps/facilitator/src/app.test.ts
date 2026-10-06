@@ -5,12 +5,13 @@ import { toFacilitatorCardanoSigner } from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/facilitator";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createFacilitatorApp } from "./app.js";
+import { type ChainRequest, createFacilitatorApp } from "./app.js";
 
 // The real facilitator scheme; building the signer does not touch the network.
 let url = "";
 let close = () => {};
 const lookups: string[] = [];
+const forwarded: ChainRequest[] = [];
 
 beforeAll(async () => {
   const signer = toFacilitatorCardanoSigner({
@@ -26,6 +27,12 @@ beforeAll(async () => {
     lookupTx: async (hash, ttlSlot) => {
       lookups.push(ttlSlot === undefined ? hash : `${hash}@${ttlSlot}`);
       return ttlSlot === undefined ? { found: false } : { found: false, final: true };
+    },
+    chain: {
+      forward: async (request) => {
+        forwarded.push(request);
+        return { status: 200, contentType: "application/json", body: Buffer.from('{"ok":1}') };
+      },
     },
     log: createLogger("facilitator-test"),
   });
@@ -76,5 +83,41 @@ describe("facilitator app", () => {
       });
       expect(res.status).toBe(400);
     }
+  });
+
+  it("forwards only the allowlisted Blockfrost paths, bodies untouched", async () => {
+    const addr = `addr_test1qp${"q".repeat(50)}`;
+    const get = await fetch(`${url}/blockfrost/addresses/${addr}/utxos?page=1&count=100`);
+    expect(get.status).toBe(200);
+    expect(await get.json()).toEqual({ ok: 1 });
+    expect(forwarded.at(-1)).toMatchObject({
+      method: "GET",
+      path: `/addresses/${addr}/utxos`,
+      search: "?page=1&count=100",
+    });
+
+    const cbor = Buffer.from("84a40081825820", "hex");
+    await fetch(`${url}/blockfrost/tx/submit`, {
+      method: "POST",
+      headers: { "content-type": "application/cbor" },
+      body: cbor,
+    });
+    expect(forwarded.at(-1)).toMatchObject({ method: "POST", path: "/tx/submit" });
+    expect(forwarded.at(-1)?.body?.equals(cbor)).toBe(true);
+
+    const json = '{"cbor":"84a4","additionalUtxoSet":[]}';
+    await fetch(`${url}/blockfrost/utils/txs/evaluate/utxos`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: json,
+    });
+    expect(forwarded.at(-1)?.body?.toString()).toBe(json);
+
+    const count = forwarded.length;
+    for (const path of ["/blockfrost/accounts/stake_test1x", "/blockfrost/epochs/1/parameters"]) {
+      expect((await fetch(`${url}${path}`)).status).toBe(404);
+    }
+    expect((await fetch(`${url}/blockfrost/epochs/latest/parameters?x=1`)).status).toBe(400);
+    expect(forwarded.length).toBe(count);
   });
 });

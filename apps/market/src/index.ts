@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { masumiSeller } from "@pekkah/payments";
 import { AssetId, CardanoAddress, DEFAULT_ASSET, PEKKAH_VERSION } from "@pekkah/protocol";
-import { createLogger, envFlag, envPort, gitSha, readEnv } from "@pekkah/runtime";
+import { assertMnemonic, createLogger, envFlag, envPort, gitSha, readEnv } from "@pekkah/runtime";
 import { z } from "zod";
 import { createApp } from "./app.js";
 import { createCalibrator } from "./calibration.js";
@@ -21,6 +21,7 @@ import { OfferStore } from "./offers.js";
 import { registerPaidJobRoute } from "./paid.js";
 import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
+import { tryCreateResultSubmitter } from "./result-submit.js";
 import { registerAgentEvents, registerReadRoutes } from "./routes.js";
 import { RunStore } from "./runs.js";
 import { UiHub } from "./ui.js";
@@ -82,6 +83,28 @@ bus.subscribe((event) => {
   const job = jobs.get(event.jobId);
   if (job?.status === "dispatched") job.status = "running";
 });
+// PR-10b: with Masumi on, the market submits each escrow job's result hash as Seller A, with
+// the key it already holds to sign the escrow terms. Chain access goes through the facilitator.
+const submitResult =
+  seller && env.SELLER_A_MNEMONIC && env.SELLER_A_ADDRESS
+    ? tryCreateResultSubmitter({
+        chainUrl: `${env.FACILITATOR_URL.replace(/\/+$/, "")}/blockfrost`,
+        sellerMnemonic: assertMnemonic("SELLER_A_MNEMONIC", env.SELLER_A_MNEMONIC),
+        sellerAddress: env.SELLER_A_ADDRESS,
+        log,
+      })
+    : null;
+const escrowResults = submitResult
+  ? {
+      submit: submitResult,
+      txFound: async (txHash: string) => {
+        const res = await fetch(`${env.FACILITATOR_URL.replace(/\/+$/, "")}/tx/${txHash}`, {
+          signal: AbortSignal.timeout(20_000),
+        });
+        return res.ok && ((await res.json()) as { found?: boolean }).found === true;
+      },
+    }
+  : undefined;
 const payments = createMarketPayments(
   {
     facilitatorUrl: env.FACILITATOR_URL,
@@ -92,6 +115,7 @@ const payments = createMarketPayments(
   bus,
   log,
   { jobs, offers },
+  escrowResults,
 );
 const registry = new WorkerRegistry({
   tokens: parseWorkerTokens(env.WORKER_TOKENS),
