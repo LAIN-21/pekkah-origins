@@ -6,6 +6,8 @@ import { createLogger, envFlag, envPort, gitSha, readEnv } from "@pekkah/runtime
 import { z } from "zod";
 import { createApp } from "./app.js";
 import { createCalibrator } from "./calibration.js";
+import { DemoController } from "./demo.js";
+import { registerDemoRoute } from "./demo-route.js";
 import {
   bearerGuard,
   registerDevDispatchRoutes,
@@ -39,6 +41,8 @@ const env = readEnv("market", {
   WORKER_TOKENS: z.string().min(1),
   DEMO_DAILY_RUNS: z.coerce.number().int().min(0).default(40),
   AGENT_TOKEN: z.string().min(16),
+  AGENT_URL: z.string().url().default("http://127.0.0.1:4100"),
+  DEMO_COOLDOWN_SEC: z.coerce.number().int().min(0).default(120),
   DATA_DIR: z.string().min(1).default("/var/lib/pekkah"),
 });
 const log = createLogger("market");
@@ -93,6 +97,17 @@ const registry = new WorkerRegistry({
   log,
   calibrate: createCalibrator(bus, log),
 });
+// The run button. The UI hub is created after the server starts; until then nobody listens.
+let notifyDemo = () => {};
+const demo = new DemoController({
+  agentUrl: env.AGENT_URL,
+  agentToken: env.AGENT_TOKEN,
+  cooldownSec: env.DEMO_COOLDOWN_SEC,
+  dailyRuns: env.DEMO_DAILY_RUNS,
+  bus,
+  log,
+  onChange: () => notifyDemo(),
+});
 const sellers = Object.fromEntries(
   (["A", "B", "C"] as const).flatMap((id) => {
     const address = env[`SELLER_${id}_ADDRESS`];
@@ -128,6 +143,7 @@ const app = createApp({
     });
     registerReadRoutes(app, { jobs, runs, facilitatorUrl: env.FACILITATOR_URL, log });
     registerAgentEvents(app, bearerGuard(env.AGENT_TOKEN), bus);
+    registerDemoRoute(app, demo, env.DEMO_TOKEN);
     if (env.PEKKAH_DEV_ROUTES && env.DEMO_TOKEN) {
       const guard = bearerGuard(env.DEMO_TOKEN);
       const common = {
@@ -158,19 +174,20 @@ const server = app.listen(env.MARKET_PORT, () => {
   );
 });
 registry.attach(server);
-// The run button arrives in PR-06b; until then the UI sees an idle demo with a full day.
 const ui = new UiHub({
   bus,
   workers: () => registry.snapshots(),
   onWorkersChange: (listener) => registry.onChange(listener),
-  demo: () => ({ running: false, cooldownUntil: null, runsLeftToday: env.DEMO_DAILY_RUNS }),
+  demo: () => demo.state(),
   log,
 });
 ui.attach(server);
+notifyDemo = () => ui.demoChanged();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     log.info({ signal }, "market stopping");
+    demo.close();
     ui.close();
     registry.close();
     server.close(() => process.exit(0));
