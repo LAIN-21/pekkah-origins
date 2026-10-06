@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { EnvError, envFlag, envPort, isUnset, loadLocalEnv, parseEnvShape } from "./env.js";
 import { REDACTED, redact } from "./log.js";
+import { assertMnemonic, mnemonicProblem, normalizeMnemonic } from "./mnemonic.js";
 
 describe("env", () => {
   it("treats empty strings and the placeholder as unset", () => {
@@ -109,5 +110,42 @@ describe("redact", () => {
     const a: Record<string, unknown> = { name: "a" };
     a.self = a;
     expect(redact(a)).toEqual({ name: "a", self: "[circular]" });
+  });
+});
+
+describe("mnemonic checks", () => {
+  // The public BIP-39 test vector; never a real wallet.
+  const valid = `${"abandon ".repeat(11)}about`;
+
+  it("accepts a valid mnemonic", () => {
+    expect(mnemonicProblem(valid)).toBeNull();
+    expect(mnemonicProblem(`  ${valid.toUpperCase()}  `)).toBeNull();
+  });
+
+  it("names positions and counts, never the words", () => {
+    const typo = valid.replace(/about$/, "abuot");
+    expect(mnemonicProblem(typo)).toBe("word 12 of 12 is not in the BIP-39 English wordlist");
+    const two = `zzzq ${"abandon ".repeat(10)}qqqz`;
+    expect(mnemonicProblem(two)).toBe("words 1, 12 of 12 are not in the BIP-39 English wordlist");
+    expect(mnemonicProblem("abandon abandon")).toBe(
+      "has 2 words; a mnemonic has 12, 15, 18, 21 or 24",
+    );
+    expect(mnemonicProblem("abandon ".repeat(12))).toMatch(/checksum/);
+    for (const bad of [typo, two]) {
+      const message = mnemonicProblem(bad) ?? "";
+      for (const word of bad.split(" ")) expect(message).not.toContain(word);
+    }
+  });
+
+  it("normalizes case and whitespace the same way for the check and the library", () => {
+    const messy = `  ${"ABANDON\t ".repeat(11)}About \n`;
+    expect(normalizeMnemonic(messy)).toBe(valid);
+    expect(assertMnemonic("BUYER_MNEMONIC", messy)).toBe(valid);
+  });
+
+  it("throws with the variable name only", () => {
+    expect(() => assertMnemonic("BUYER_MNEMONIC", "abandon abuot")).toThrow(
+      "BUYER_MNEMONIC has 2 words; a mnemonic has 12, 15, 18, 21 or 24",
+    );
   });
 });

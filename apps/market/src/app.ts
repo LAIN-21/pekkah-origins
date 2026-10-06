@@ -9,6 +9,8 @@ export interface MarketAppOptions {
   /** apps/web/dist; served at / with an SPA fallback when it holds an index.html. */
   webDist: string | null;
   workersOnline: () => number;
+  /** Routes registered directly on app, before the /api 404 and the web fallback. */
+  routes?: (app: express.Express) => void;
 }
 
 export function createApp(options: MarketAppOptions): express.Express {
@@ -28,6 +30,8 @@ export function createApp(options: MarketAppOptions): express.Express {
     };
     res.json(body);
   });
+
+  options.routes?.(app);
 
   app.use("/api", (_req, res) => {
     const body: ApiError = { error: "not_found" };
