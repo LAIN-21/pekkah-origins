@@ -25,6 +25,7 @@ function worker(
     warm?: WorkloadName[];
     schedule?: string;
     vcpus?: number;
+    selling?: boolean;
   },
 ): WorkerSnapshot {
   const prices = Object.entries(options.prices).map(([workload, usd]) => ({
@@ -64,6 +65,7 @@ function worker(
     warm: options.warm ?? (Object.keys(options.prices) as WorkloadName[]),
     ...(options.schedule ? { schedule: options.schedule } : {}),
     lastSeenAt: AT,
+    selling: options.selling ?? true,
   };
 }
 
@@ -132,6 +134,37 @@ describe("the plan's scenarios (6.4)", () => {
     expect(reasons(r)).toEqual({
       B: "excluded: excluded by the request",
       C: "excluded: excluded by the request",
+    });
+  });
+});
+
+describe("workers on probation (PR-13, defense in depth)", () => {
+  // Cheapest, fastest, warm, with the biggest GPU: it would win everything if it sold.
+  const P = worker("P", {
+    prices: { image: 0.001, fractal: 0.001 },
+    spi: 1e-10,
+    image: 1,
+    gpu: 48,
+    selling: false,
+  });
+
+  it("change nothing in any quote: offers, counter-offer, market price, rejections", () => {
+    for (const name of ["gpu-image", "cpu-counter", "cpu-tight", "failover"] as const) {
+      const request = scenarioRequest(name);
+      expect(match(request, [...market, P], NOW), name).toEqual(match(request, market, NOW));
+    }
+    const all = match(scenarioRequest("cpu-counter"), [P, ...market], NOW);
+    expect(JSON.stringify(all)).not.toContain('"P"');
+  });
+
+  it("fail closed: a snapshot without the flag does not sell", () => {
+    const { selling: _, ...unflagged } = worker("U", { prices: { fractal: 0.001 }, spi: 1e-10 });
+    const request = scenarioRequest("cpu-tight");
+    expect(match(request, [...market, unflagged], NOW)).toEqual(match(request, market, NOW));
+    expect(match(request, [unflagged], NOW)).toEqual({
+      offers: [],
+      marketPriceUsd: null,
+      rejected: [],
     });
   });
 });

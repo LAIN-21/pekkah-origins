@@ -34,7 +34,9 @@ export function registerQuoteRoute(app: express.Express, o: QuoteRouteOptions): 
       }
       const runId = runIdOf(req);
       const now = Date.now();
-      const result = match(parsed.data, o.workers(), new Date(now));
+      // Only workers the market sells; the matcher checks again (it fails closed).
+      const selling = o.workers().filter((w) => w.selling === true);
+      const result = match(parsed.data, selling, new Date(now));
       const { quote, records } = buildQuote(parsed.data, result, {
         quoteId: nextId(),
         ...(runId ? { runId } : {}),

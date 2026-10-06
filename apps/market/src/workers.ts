@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import {
   type Calibration,
   type FractalParams,
-  type HelloMsg,
+  HelloMsg,
   type ImageParams,
   type JobKind,
   RESULT_WAIT_GRACE_SEC,
@@ -22,6 +22,7 @@ import type { Logger } from "@pekkah/runtime";
 import { monotonicFactory } from "ulid";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { EventBus } from "./events.js";
+import { pngSize } from "./png.js";
 
 const nextJobId = monotonicFactory();
 const HELLO_TIMEOUT_MS = 10_000;
@@ -55,8 +56,13 @@ export type JobOutcome =
       /** Dispatch to result, measured by the market. */
       durationMs: number;
       workerDurationMs: number;
+      /** The market's own check of an image result. */
+      check?: { kind: "png"; width: number; height: number };
     }
   | { ok: false; jobId: string; workerId: string; error: string; durationMs: number };
+
+/** Who decided a job's outcome: the worker's own report, or the market. */
+type Decider = "worker" | "market";
 
 interface PendingJob {
   jobId: string;
@@ -83,6 +89,8 @@ interface WorkerEntry {
   calibration: Calibration;
   calibrating: number;
   untrusted: boolean;
+  /** The market sells its compute (allowlisted). False means probation (PR-17). */
+  selling: boolean;
   /** Workloads calibrated, or being calibrated, on this connection. */
   calibrated: Set<WorkloadName>;
   pending: PendingJob | null;
@@ -97,6 +105,8 @@ export interface WorkerRegistryOptions {
   /** Called when a workload needs calibrating (on hello, and when it first turns warm). */
   calibrate?: (registry: WorkerRegistry, workerId: string, workload: WorkloadName) => void;
   silentMs?: number;
+  /** The Masumi seller's address, while Masumi is on: that worker can sell through escrow. */
+  escrowSeller?: string;
 }
 
 export function parseWorkerTokens(value: string): Map<string, string> {
@@ -168,12 +178,23 @@ export class WorkerRegistry {
     socket.on("message", (data) => {
       let msg: WorkerToMarket;
       try {
-        const parsed = WorkerToMarket.safeParse(JSON.parse(data.toString()));
+        const raw: unknown = JSON.parse(data.toString());
+        const parsed = WorkerToMarket.safeParse(raw);
         if (!parsed.success) {
-          this.o.log.warn(
-            { workerId: entry?.workerId, issues: parsed.error.issues.slice(0, 3) },
-            "invalid worker message",
-          );
+          const issues = parsed.error.issues.slice(0, 3);
+          this.o.log.warn({ workerId: entry?.workerId, issues }, "invalid worker message");
+          // A hello outside the protocol (say, a string past its bound) is refused at once,
+          // so the worker learns why instead of waiting for the hello timeout.
+          if (!entry && (raw as { type?: unknown } | null)?.type === "hello") {
+            clearTimeout(helloTimer);
+            // The union's own error names no field; the hello schema's does.
+            const helloIssues = HelloMsg.safeParse(raw).error?.issues ?? issues;
+            const where = helloIssues
+              .slice(0, 3)
+              .map((i) => i.path.join(".") || i.message)
+              .join(", ");
+            this.refuse(socket, "invalid_hello", `hello does not fit the protocol: ${where}`);
+          }
           return;
         }
         msg = parsed.data;
@@ -212,7 +233,7 @@ export class WorkerRegistry {
 
   private onHello(socket: WebSocket, hello: HelloMsg): WorkerEntry | null {
     const expected = this.o.tokens.get(hello.workerId);
-    if (!expected || !sameToken(hello.token, expected)) {
+    if (!expected || !hello.token || !sameToken(hello.token, expected)) {
       this.o.log.warn({ workerId: hello.workerId }, "worker refused: bad token");
       this.refuse(socket, "unauthorized", "unknown worker or bad token");
       return null;
@@ -248,6 +269,7 @@ export class WorkerRegistry {
       calibration: {},
       calibrating: 0,
       untrusted: false,
+      selling: true,
       calibrated: new Set(),
       pending: null,
     };
@@ -323,13 +345,13 @@ export class WorkerRegistry {
       case "job.accepted": {
         const job = entry.pending;
         if (job?.jobId !== msg.jobId || job.request.quiet) return;
-        this.emitJob(job, "job.running", { workerId: entry.workerId });
+        this.emitJob(job, "worker", "job.running", { workerId: entry.workerId });
         return;
       }
       case "job.progress": {
         const job = entry.pending;
         if (job?.jobId !== msg.jobId || job.request.quiet) return;
-        this.emitJob(job, "job.progress", {
+        this.emitJob(job, "worker", "job.progress", {
           workerId: entry.workerId,
           pct: msg.pct,
           ...(msg.note ? { note: msg.note } : {}),
@@ -342,7 +364,7 @@ export class WorkerRegistry {
         const durationMs = Math.round(performance.now() - job.startedAt);
         const base = { jobId: job.jobId, workerId: entry.workerId, durationMs };
         if (!msg.ok) {
-          this.settle(entry, { ...base, ok: false, error: msg.error });
+          this.settle(entry, { ...base, ok: false, error: msg.error }, "worker");
           return;
         }
         // Never trust the worker's own hash: recompute it from the bytes received.
@@ -352,14 +374,33 @@ export class WorkerRegistry {
           this.settle(entry, { ...base, ok: false, error: "result corrupted in transit" });
           return;
         }
-        this.settle(entry, {
-          ...base,
-          ok: true,
-          mime: msg.mime,
-          sha256,
-          data,
-          workerDurationMs: msg.durationMs,
-        });
+        // Nor its word on the image: the market reads the PNG header itself. A mismatch
+        // fails the job, so a paid one answers 502 and nothing is charged.
+        let check: { kind: "png"; width: number; height: number } | undefined;
+        if (job.request.workload === "image") {
+          const want = job.request.params.size;
+          const size = pngSize(data);
+          if (!size || size.width !== want || size.height !== want) {
+            const got = size ? `a ${size.width}×${size.height} PNG` : "something that is not a PNG";
+            const error = `the market's check failed: asked for a ${want}×${want} PNG, got ${got}`;
+            this.settle(entry, { ...base, ok: false, error });
+            return;
+          }
+          check = { kind: "png", ...size };
+        }
+        this.settle(
+          entry,
+          {
+            ...base,
+            ok: true,
+            mime: msg.mime,
+            sha256,
+            data,
+            workerDurationMs: msg.durationMs,
+            ...(check ? { check } : {}),
+          },
+          "worker",
+        );
         return;
       }
     }
@@ -367,11 +408,12 @@ export class WorkerRegistry {
 
   private emitJob(
     job: PendingJob,
-    type: "job.running" | "job.progress" | "job.completed" | "job.failed",
+    source: Decider,
+    type: "job.dispatched" | "job.running" | "job.progress" | "job.completed" | "job.failed",
     data: Record<string, unknown>,
   ): void {
     this.o.bus.emit({
-      source: "market",
+      source,
       type,
       jobId: job.jobId,
       ...(job.request.runId ? { runId: job.request.runId } : {}),
@@ -380,7 +422,12 @@ export class WorkerRegistry {
     } as never);
   }
 
-  private settle(entry: WorkerEntry, outcome: JobOutcome): void {
+  /**
+   * Ends the pending job. `decidedBy` is the event's source: the worker for what it reported
+   * itself (its result, or its own failure); the market for what it decided (a missed
+   * deadline, a disconnect, a result that failed its checks).
+   */
+  private settle(entry: WorkerEntry, outcome: JobOutcome, decidedBy: Decider = "market"): void {
     const job = entry.pending;
     if (!job || job.jobId !== outcome.jobId) return;
     entry.pending = null;
@@ -388,15 +435,19 @@ export class WorkerRegistry {
     this.changed();
     if (!job.request.quiet) {
       if (outcome.ok) {
-        this.emitJob(job, "job.completed", {
+        this.emitJob(job, decidedBy, "job.completed", {
           workerId: entry.workerId,
           durationMs: outcome.durationMs,
           sha256: outcome.sha256,
           mime: outcome.mime,
           bytes: outcome.data.length,
+          ...(outcome.check ? { check: outcome.check } : {}),
         });
       } else {
-        this.emitJob(job, "job.failed", { workerId: entry.workerId, reason: outcome.error });
+        this.emitJob(job, decidedBy, "job.failed", {
+          workerId: entry.workerId,
+          reason: outcome.error,
+        });
       }
     }
     job.resolve(outcome);
@@ -444,7 +495,7 @@ export class WorkerRegistry {
       entry.pending = job;
       this.changed();
       if (!request.quiet) {
-        this.emitJob(job, "job.dispatched" as never, {
+        this.emitJob(job, "market", "job.dispatched", {
           workerId,
           workload: request.workload,
           kind: request.kind,
@@ -529,6 +580,8 @@ export class WorkerRegistry {
         ...((entry.pending?.jobId ?? entry.currentJobId)
           ? { currentJobId: entry.pending?.jobId ?? entry.currentJobId }
           : {}),
+        selling: entry.selling,
+        escrowSeller: this.o.escrowSeller !== undefined && entry.payTo === this.o.escrowSeller,
       }));
   }
 

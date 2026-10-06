@@ -21,6 +21,8 @@ export interface DemoOptions {
   log: Logger;
   /** Called whenever the state the run button shows changes. */
   onChange: () => void;
+  /** A run under way that this controller did not start (the MCP's, the CLI's), if any. */
+  liveRun?: (now: number) => string | undefined;
   now?: () => number;
 }
 
@@ -80,6 +82,9 @@ export class DemoController {
     if (this.running) {
       return { status: 409, body: { error: "run_in_progress", runId: this.running.runId } };
     }
+    // A click must never cut into another client's run, say a recorded Claude run.
+    const live = this.o.liveRun?.(this.now());
+    if (live) return { status: 409, body: { error: "run_in_progress", runId: live } };
     if (!privileged) {
       if (this.now() < this.cooldownUntil) {
         return {

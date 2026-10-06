@@ -5,7 +5,7 @@ import { type JobEventInput, scenarioRequest } from "@pekkah/protocol";
 import { createLogger } from "@pekkah/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { EventBus } from "./events.js";
-import { RunStore } from "./runs.js";
+import { LIVE_RUN_WINDOW_MS, RunStore } from "./runs.js";
 
 const log = createLogger("runs-test");
 const dirs: string[] = [];
@@ -25,6 +25,58 @@ const started = (i: number): JobEventInput => ({
   data: { scenario: "cpu-tight", request: scenarioRequest("cpu-tight") },
 });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 700));
+
+describe("a run under way (the run button's 409)", () => {
+  const R = runId(90);
+  it("is live while its last event is at most 2 minutes old and it has no outcome", () => {
+    const bus = new EventBus(log);
+    const runs = new RunStore(bus, null, log);
+    expect(runs.liveRun(Date.now())).toBeUndefined();
+    bus.emit({
+      source: "agent",
+      type: "run.started",
+      runId: R,
+      data: {
+        scenario: "custom",
+        client: "Claude via MCP",
+        request: scenarioRequest("gpu-image"),
+      },
+    });
+    expect(runs.get(R)?.scenario).toBe("custom");
+    expect(runs.liveRun(Date.now())).toBe(R);
+    expect(runs.liveRun(Date.now() + LIVE_RUN_WINDOW_MS + 1_000)).toBeUndefined();
+    bus.emit({
+      source: "agent",
+      type: "run.completed",
+      runId: R,
+      data: { jobId: "01JOB", workerId: "A", txHash: "a".repeat(64), totalMs: 1 },
+    });
+    expect(runs.liveRun(Date.now())).toBeUndefined();
+    // An escrow event after the outcome never makes the run live again.
+    bus.emit({
+      source: "chain",
+      type: "escrow.result_submitted",
+      runId: R,
+      data: {
+        lockTxHash: "b".repeat(64),
+        txHash: "c".repeat(64),
+        resultHash: "d".repeat(64),
+        explorerUrl: `https://preprod.cardanoscan.io/transaction/${"c".repeat(64)}`,
+      },
+    });
+    expect(runs.liveRun(Date.now())).toBeUndefined();
+  });
+
+  it("ignores dev events and runs that only failed", () => {
+    const bus = new EventBus(log);
+    const runs = new RunStore(bus, null, log);
+    bus.emit({ ...started(91), dev: true });
+    expect(runs.liveRun(Date.now())).toBeUndefined();
+    bus.emit(started(92));
+    bus.emit({ source: "agent", type: "run.failed", runId: runId(92), data: { reason: "x" } });
+    expect(runs.liveRun(Date.now())).toBeUndefined();
+  });
+});
 
 describe("run logs", () => {
   it("keeps a run's outcome even past the event cap", () => {

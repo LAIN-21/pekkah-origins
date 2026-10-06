@@ -288,13 +288,13 @@ describe("POST /api/escrow-jobs/:offerId", () => {
         ("txHash" in e.data && e.data.txHash === tx.txHash) ||
         (e.type === "receipt.issued" && e.data.receipt.txHash === tx.txHash),
     );
-    expect(mine.map((e) => e.type)).toEqual([
-      "payment.verified",
-      "job.dispatched",
-      "payment.settling",
-      "payment.settled",
-      "escrow.locked",
-      "receipt.issued",
+    expect(mine.map((e) => `${e.type} ${e.source}`)).toEqual([
+      "payment.verified market",
+      "job.dispatched market",
+      "payment.settling market",
+      "payment.settled chain",
+      "escrow.locked chain",
+      "receipt.issued market",
     ]);
     const settling = mine.find((e) => e.type === "payment.settling");
     expect(settling?.data).toMatchObject({ transferMethod: "masumi" });
@@ -328,6 +328,7 @@ describe("POST /api/escrow-jobs/:offerId", () => {
     const resultHash = createHash("sha256").update(Buffer.from("png bytes from A")).digest("hex");
     expect(submits.at(-1)).toEqual({ lockTxHash: tx.txHash, outputIndex: 0, resultHash });
     expect(submitted?.data).toMatchObject({ txHash: RESULT_TX, resultHash });
+    expect(submitted?.source).toBe("chain");
     const receipt = mine.find((e) => e.type === "receipt.issued");
     expect(receipt?.type === "receipt.issued" && receipt.data.receipt).toMatchObject({
       transferMethod: "masumi",

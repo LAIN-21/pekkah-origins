@@ -79,12 +79,19 @@ function eligibility(
   return { check: null, estSec };
 }
 
-/** The matcher (PLAN 6.1): a pure function of the request, the workers and the time. */
+/**
+ * The matcher (PLAN 6.1): a pure function of the request, the workers and the time. Only
+ * workers with `selling: true` take part; one on probation never appears in the offers, the
+ * counter-offer, the market price or the rejections. It fails closed: a snapshot without the
+ * flag doesn't sell.
+ */
 export function match(request: ComputeRequest, workers: WorkerSnapshot[], now: Date): MatchResult {
   const budget = usdToAtomic(request.budget.maxUsd);
   const eligible: Candidate[] = [];
   const rejected: Rejection[] = [];
-  const sorted = [...workers].sort((a, b) => a.workerId.localeCompare(b.workerId));
+  const sorted = workers
+    .filter((w) => w.selling === true)
+    .sort((a, b) => a.workerId.localeCompare(b.workerId));
 
   for (const w of sorted) {
     const price = w.prices.find((p) => p.workload === request.workload);

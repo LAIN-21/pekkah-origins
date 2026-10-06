@@ -15,6 +15,17 @@ export const ScenarioName = z.enum([
 ]);
 export type ScenarioName = z.infer<typeof ScenarioName>;
 
+/**
+ * What a run is: one of the scenarios, or `custom`, a free-form request from the MCP or the CLI
+ * (PLAN2 PR-13). Maps stay keyed by ScenarioName; a custom run has no scenario entry.
+ */
+export const RunScenario = z.union([ScenarioName, z.literal("custom")]);
+export type RunScenario = z.infer<typeof RunScenario>;
+
+export function isScenarioName(value: string): value is ScenarioName {
+  return ScenarioName.safeParse(value).success;
+}
+
 /** Scenarios the public run button may start. Failover needs a real kill (demo-check or the CLI). */
 export const PUBLIC_SCENARIOS = [
   "gpu-image",

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { NETWORK } from "./constants.js";
 import { JobEvent } from "./events.js";
 import { Id, IsoDate, WorkerId } from "./primitives.js";
-import { ScenarioName } from "./scenarios.js";
+import { RunScenario, ScenarioName } from "./scenarios.js";
 import { FractalParams, IMAGE_PROMPT_COUNT, ImageParams } from "./workloads.js";
 
 // HTTP bodies (PLAN 5.4) that are not already covered by the market types.
@@ -69,7 +69,7 @@ export type AgentRunRequest = z.infer<typeof AgentRunRequest>;
 /** GET /api/runs/latest and GET /api/runs/:runId/events. */
 export const RunLog = z.object({
   runId: Id,
-  scenario: ScenarioName.optional(),
+  scenario: RunScenario.optional(),
   startedAt: IsoDate.optional(),
   events: z.array(JobEvent),
 });

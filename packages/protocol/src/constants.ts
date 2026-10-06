@@ -56,6 +56,26 @@ export const RESULT_MAX_BYTES = 20 * 1024 * 1024;
 
 export const PROMPT_MAX_CHARS = 300;
 
+/**
+ * Bounds on what a worker reports in its hello (PLAN2 PR-13). The three live workers' hellos
+ * fit them unchanged; a worker trims its strings to them before sending.
+ */
+export const HELLO_LIMITS = {
+  name: 64,
+  cpuModel: 80,
+  gpuName: 64,
+  driver: 32,
+  version: 64,
+  schedule: 64,
+  prices: 4,
+} as const;
+
 /** The only wording for a Masumi lock (PLAN 4.8): locked in escrow, never paid or released. */
 export const MASUMI_LOCK_LABEL =
   "Locked in Masumi escrow. Release, refund and dispute tooling is my next step.";
+/** Only once an escrow.released event exists for the lock (CLAUDE.md rule 4). */
+export const MASUMI_RELEASED_LABEL =
+  "Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back.";
+/** Only once an escrow.refunded event exists for the lock (CLAUDE.md rule 4). */
+export const MASUMI_REFUNDED_LABEL =
+  "Refunded from Masumi escrow: the price and the collateral went back to the buyer.";

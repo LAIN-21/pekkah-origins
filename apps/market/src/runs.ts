@@ -1,15 +1,20 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type JobEvent, RunLog, type ScenarioName } from "@pekkah/protocol";
+import { type JobEvent, RunLog, type RunScenario } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
 import type { EventBus } from "./events.js";
 
 const MAX_EVENTS_PER_RUN = 500;
 const KEEP_RUNS = 30;
+/** A run counts as under way while its last event is this recent and it has no outcome. */
+export const LIVE_RUN_WINDOW_MS = 2 * 60_000;
+
+const isOutcome = (event: JobEvent) =>
+  event.type === "run.completed" || event.type === "run.failed";
 
 interface Run {
   runId: string;
-  scenario?: ScenarioName;
+  scenario?: RunScenario;
   startedAt?: string;
   events: JobEvent[];
 }
@@ -47,8 +52,7 @@ export class RunStore {
       }
     }
     // A run's outcome is always kept, even past the cap: a replay must show how it ended.
-    const terminal = event.type === "run.completed" || event.type === "run.failed";
-    if (run.events.length < MAX_EVENTS_PER_RUN || terminal) run.events.push(event);
+    if (run.events.length < MAX_EVENTS_PER_RUN || isOutcome(event)) run.events.push(event);
     if (event.type === "run.started") {
       run.scenario = event.data.scenario;
       run.startedAt = event.ts;
@@ -64,6 +68,20 @@ export class RunStore {
 
   latest(): RunLog | undefined {
     return this.latestRunId ? this.get(this.latestRunId) : undefined;
+  }
+
+  /**
+   * A run under way right now, hosted or not (the MCP's, the CLI's): its last event is at most
+   * `windowMs` old and it has no run.completed or run.failed. Events after the outcome (an
+   * escrow's result or release) never make a run live again.
+   */
+  liveRun(now: number, windowMs = LIVE_RUN_WINDOW_MS): string | undefined {
+    for (const run of this.runs.values()) {
+      const last = run.events.at(-1);
+      if (!last || run.events.some(isOutcome)) continue;
+      if (now - Date.parse(last.ts) <= windowMs) return run.runId;
+    }
+    return undefined;
   }
 
   private persistSoon(run: Run): void {

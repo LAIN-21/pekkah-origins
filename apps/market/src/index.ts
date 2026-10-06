@@ -122,6 +122,7 @@ const registry = new WorkerRegistry({
   bus,
   log,
   calibrate: createCalibrator(bus, log),
+  ...(seller ? { escrowSeller: seller.sellerAddress } : {}),
 });
 // The run button. The UI hub is created after the server starts; until then nobody listens.
 let notifyDemo = () => {};
@@ -133,6 +134,7 @@ const demo = new DemoController({
   bus,
   log,
   onChange: () => notifyDemo(),
+  liveRun: (now) => runs.liveRun(now),
 });
 const sellers = Object.fromEntries(
   (["A", "B", "C"] as const).flatMap((id) => {

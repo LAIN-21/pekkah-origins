@@ -1,19 +1,22 @@
 import { z } from "zod";
+import { HELLO_LIMITS } from "./constants.js";
 import { AtomicAmount, CardanoAddress, Id, IsoDate, WorkerId } from "./primitives.js";
 import { CALIB_CHALLENGES, WorkloadName } from "./workloads.js";
 
 export const WorkerStatus = z.enum(["calibrating", "online", "busy", "offline", "untrusted"]);
 export type WorkerStatus = z.infer<typeof WorkerStatus>;
 
+/** Reported by the machine, not measured. */
 export const GpuInfo = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).max(HELLO_LIMITS.gpuName),
   vramGb: z.number().nonnegative(),
-  driver: z.string(),
+  driver: z.string().max(HELLO_LIMITS.driver),
 });
 export type GpuInfo = z.infer<typeof GpuInfo>;
 
+/** Reported by the machine, not measured. */
 export const WorkerHardware = z.object({
-  cpuModel: z.string(),
+  cpuModel: z.string().max(HELLO_LIMITS.cpuModel),
   vcpus: z.number().int().positive(),
   memGb: z.number().positive(),
   gpu: GpuInfo.optional(),
@@ -82,5 +85,13 @@ export const WorkerSnapshot = z.object({
   schedule: z.string().optional(),
   lastSeenAt: IsoDate,
   currentJobId: Id.optional(),
+  /**
+   * Whether the market sells this worker's compute. False means probation: listed and
+   * measured, never sold. The market always sets it; the matcher treats anything but `true`
+   * as not selling.
+   */
+  selling: z.boolean().optional(),
+  /** Its payout address is the Masumi seller's, so it can sell through escrow. */
+  escrowSeller: z.boolean().optional(),
 });
 export type WorkerSnapshot = z.infer<typeof WorkerSnapshot>;
