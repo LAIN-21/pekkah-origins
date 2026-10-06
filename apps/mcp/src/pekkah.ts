@@ -31,6 +31,8 @@ export interface Deps {
   buyer: Pick<Buyer, "buy" | "idle">;
   fetch?: typeof fetch;
   newRunId: () => string;
+  /** Who starts the runs, for the market's page, e.g. "Claude via MCP". */
+  client?: () => string;
   /** Posts my agent's events to the market (needs AGENT_TOKEN); a no-op without it. */
   emit?: <T extends AgentEventType>(
     type: T,
@@ -52,19 +54,14 @@ export async function marketText(deps: Pick<Deps, "marketUrl" | "fetch">): Promi
   if (!res.ok) return fail(`The market answered ${res.status}.`);
   const workers = z.array(WorkerSnapshot).parse(await res.json());
   if (workers.length === 0) return { content: [text("No worker is connected to the market.")] };
-  const lines = workers.map((w) => {
-    const hw = w.hardware.gpu
+  const hardware = (w: WorkerSnapshot) =>
+    w.hardware.gpu
       ? `${w.hardware.gpu.name}, ${w.hardware.gpu.vramGb} GB VRAM, ${w.hardware.vcpus} vCPU`
       : `${w.hardware.vcpus} vCPU, ${w.hardware.memGb} GB RAM`;
-    const prices = w.prices
-      .map(
-        (p) =>
-          `${p.workload} ${formatUsd(p.usd)}${w.warm.includes(p.workload) ? "" : " (not ready)"}`,
-      )
-      .join(", ");
-    const measured = [
+  const measured = (w: WorkerSnapshot) =>
+    [
       w.calibration.fractal
-        ? `CPU render measured ${w.calibration.fractal.calibSec.toFixed(1)} s${w.calibration.fractal.verified ? " (answer checked)" : " (failed its check)"}`
+        ? `CPU render ${w.calibration.fractal.calibSec.toFixed(1)} s${w.calibration.fractal.verified ? " (answer checked)" : " (failed its check)"}`
         : null,
       w.calibration.image
         ? `1024² image in ${w.calibration.image.secImage1024x4.toFixed(1)} s (timed)`
@@ -72,13 +69,33 @@ export async function marketText(deps: Pick<Deps, "marketUrl" | "fetch">): Promi
     ]
       .filter(Boolean)
       .join("; ");
-    return `- ${w.name} (${w.workerId}), ${w.status}: ${hw}. Sells ${prices}.${measured ? ` ${measured}.` : ""}`;
+  // Before PR-13 a market didn't report `selling`; every worker it listed was allowlisted.
+  const selling = workers.filter((w) => w.selling !== false);
+  const joining = workers.filter((w) => w.selling === false);
+  const lines = selling.map((w) => {
+    const prices = w.prices
+      .map(
+        (p) =>
+          `${p.workload} ${formatUsd(p.usd)}${w.warm.includes(p.workload) ? "" : " (not ready)"}`,
+      )
+      .join(", ");
+    const m = measured(w);
+    return `- ${w.name} (${w.workerId}), ${w.status}${w.escrowSeller ? ", sells through Masumi escrow" : ""}: ${hardware(w)} (reported by the machine). Sells ${prices}.${m ? ` Measured by the market: ${m}.` : ""}`;
   });
-  return {
-    content: [
-      text(`Workers on Pekkah (Cardano preprod, paid in test tUSDM per job):\n${lines.join("\n")}`),
-    ],
-  };
+  const parts = [
+    `Workers on Pekkah (Cardano preprod, paid in test tUSDM per job):\n${lines.join("\n") || "- none selling right now"}`,
+  ];
+  if (joining.length) {
+    parts.push(
+      `Joining the network (on probation: listed and measured, but they sell nothing until they are allowlisted):\n${joining
+        .map((w) => {
+          const m = measured(w);
+          return `- ${w.workerId}, ${w.status}: ${hardware(w)} (reported by the machine).${m ? ` Measured by the market: ${m}.` : ""}`;
+        })
+        .join("\n")}`,
+    );
+  }
+  return { content: [text(parts.join("\n"))] };
 }
 
 export const GenerateImageInput = {
@@ -164,7 +181,11 @@ export async function generateImage(
     await emit("run.failed", { reason }, { runId });
     return fail(reason);
   };
-  await emit("run.started", { scenario: "gpu-image", request }, { runId });
+  await emit(
+    "run.started",
+    { scenario: "custom", ...(deps.client ? { client: deps.client() } : {}), request },
+    { runId },
+  );
 
   // One quote, and one more only if the offer was gone before we paid (nothing charged).
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -255,7 +276,7 @@ export function pendingResult(runId: string): ToolResult {
   return {
     content: [
       text(
-        `Still in progress: the worker makes the image, then the payment settles on Cardano (usually 20 to 80 s). Nothing is lost and nothing is paid twice. Call pekkah_get_image with runId "${runId}" to get the image and the receipt.`,
+        `Still in progress: the worker makes the image, then the payment settles on Cardano (usually 20 to 80 s). Nothing is lost and nothing is paid twice. Call pekkah_result with runId "${runId}" to get the image and the receipt.`,
       ),
     ],
   };

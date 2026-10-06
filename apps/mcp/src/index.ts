@@ -1,6 +1,7 @@
-// Pekkah as an MCP server (PLAN, B1): Claude can list the market and buy an image with a
-// tool call. It runs on my Mac over stdio; the buyer is the same x402 client as my agent,
-// with the same wallet, the same caps and the same 402-matches-offer check.
+// Pekkah as an MCP server (PLAN, B1; PLAN2 PR-14): Claude looks at the market, gets quotes,
+// keeps to my budget, asks me before paying more, and buys. It runs on my Mac over stdio; the
+// buyer is the same x402 client as my agent, with its own account, its own caps and the same
+// 402-matches-offer check.
 
 import "./stdio-guard.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -19,6 +20,7 @@ import {
   PurchaseBook,
   pendingResult,
 } from "./pekkah.js";
+import { BuyInput, QuoteInput, ResultInput, Shop } from "./shop.js";
 
 const usd = z.coerce.number().positive();
 const env = readEnv("mcp", {
@@ -32,6 +34,8 @@ const env = readEnv("mcp", {
   CAP_DAY_USD: usd.default(1),
   /** Optional: with it, the market's page shows these runs as my agent's. */
   AGENT_TOKEN: z.string().min(16).optional(),
+  /** Optional: where the full PNGs are saved. */
+  PEKKAH_OUTPUT_DIR: z.string().min(1).optional(),
 });
 const marketUrl = env.MARKET_URL.replace(/\/+$/, "");
 
@@ -71,15 +75,36 @@ const buyer = createBuyer({
   onEvent: (event) => emit(event.type, event.data, { runId: event.runId }),
 });
 
+/** The shopping policy, short. The full one is the skill in apps/mcp/skill/pekkah. */
+const INSTRUCTIONS = `Pekkah is a market where machines sell compute per job: images on a GPU, renders on a CPU. My agent pays in test tUSDM on Cardano preprod, and only after the job delivers.
+How to shop:
+1. Call pekkah_market, then pekkah_quote with the job and the budget your human gave (budgetUsd). Quotes are free.
+2. If an offer fits the budget, buy it with pekkah_buy without asking.
+3. If nothing fits, ask your human in one line, naming the price and the worker, for example "I found it for 5 cents on worker A, OK?". Buy only after a yes, with overBudgetApproved: true.
+4. If your human gave no budget, ask for one before buying. Quoting first is fine.
+5. Prefer escrow: pekkah_buy uses it by default when the worker sells through escrow.
+6. Get the result with pekkah_result. Say "locked in escrow" until pekkah_result shows the release, and give the transaction links.`;
+
+const server = new McpServer(
+  { name: "pekkah", version: PEKKAH_VERSION },
+  { instructions: INSTRUCTIONS },
+);
+
+/** Who starts the runs, as the market's page shows it. */
+function client(): string {
+  const name = server.server.getClientVersion()?.name ?? "";
+  if (/claude/i.test(name)) return "Claude via MCP";
+  return (name ? `${name} via MCP` : "An MCP client").slice(0, 40);
+}
+
 const deps: Deps = {
   marketUrl,
   asset: env.PEKKAH_ASSET,
   buyer,
   newRunId: monotonicFactory(),
+  client,
   emit,
 };
-
-const server = new McpServer({ name: "pekkah", version: PEKKAH_VERSION });
 
 server.registerTool(
   "pekkah_market",
@@ -125,29 +150,92 @@ server.registerTool(
   },
 );
 
+const shop = new Shop({
+  ...deps,
+  buyer,
+  capUsd: env.CAP_PER_PAYMENT_USD,
+  client,
+  ...(env.PEKKAH_OUTPUT_DIR ? { outputDir: env.PEKKAH_OUTPUT_DIR } : {}),
+});
+
+server.registerTool(
+  "pekkah_quote",
+  {
+    title: "Get a quote on Pekkah",
+    description:
+      "Asks the Pekkah market for offers on one job: an image (prompt, size, steps, seed) or a CPU render (preset), with a deadline and the budget your human gave. Free: nothing is bought. Returns each offer (offerId, worker, hardware as the machine reports it, price, estimate, seconds it stays valid, whether Masumi escrow is available), the counter-offer and the market price, every rejected worker with its reason, and a one-line hint. The first quote starts a task and returns its runId; pass that runId to quote again in the same task.",
+    inputSchema: QuoteInput,
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async (input) => {
+    log("quote", { workload: input.workload, budgetUsd: input.budgetUsd, runId: input.runId });
+    return shop.quote(input);
+  },
+);
+
+server.registerTool(
+  "pekkah_buy",
+  {
+    title: "Buy an offer on Pekkah",
+    description:
+      "Buys one offer that pekkah_quote returned. My agent pays with x402 in test tUSDM on Cardano preprod, only after the job delivers (a failed job charges nothing). maxUsd is the most my agent commits to, at most 0.10. If the price is above the budget your human gave, it refuses unless overBudgetApproved is true: set that only after your human said yes to this price. Uses Masumi escrow by default when the worker sells through it. Give your reason in one or two sentences: the market's page shows it. Waits about 45 s; if the job is still running, it returns the runId: then call pekkah_result.",
+    inputSchema: BuyInput,
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async (input, extra) => {
+    const started = shop.buy(input);
+    if ("refused" in started) {
+      log("buy refused", { offerId: input.offerId, maxUsd: input.maxUsd });
+      return started.refused;
+    }
+    log("buy", {
+      runId: started.runId,
+      offerId: input.offerId,
+      maxUsd: input.maxUsd,
+      escrow: input.escrow,
+      overBudgetApproved: input.overBudgetApproved,
+    });
+    return (await shop.result(started.runId, progress(extra))) ?? pendingResult(started.runId);
+  },
+);
+
+/** pekkah_result, and pekkah_get_image as its older name. */
+const result = async (
+  { runId }: { runId: string },
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+) => {
+  if (book.has(runId)) return (await book.wait(runId, progress(extra))) ?? pendingResult(runId);
+  return (await shop.result(runId, progress(extra))) ?? pendingResult(runId);
+};
+
+server.registerTool(
+  "pekkah_result",
+  {
+    title: "Get a Pekkah result",
+    description:
+      "Gets the result of a purchase by its runId: the image (a JPEG here; the full PNG is linked, and saved when PEKKAH_OUTPUT_DIR is set), the receipt with the transaction link, and for escrow every step the market has seen: locked, result hash submitted, the unlock time, released. Waits up to about 45 s. Buys nothing. Call it again later to see the escrow's later steps.",
+    inputSchema: ResultInput,
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  result,
+);
+
 server.registerTool(
   "pekkah_get_image",
   {
     title: "Get a Pekkah image",
-    description:
-      "Gets the image and receipt of a purchase that pekkah_generate_image started, by its run id. Waits up to about 45 s. Buys nothing.",
-    inputSchema: {
-      runId: z.string().min(1).max(64).describe("The run id pekkah_generate_image returned."),
-    },
+    description: "The same as pekkah_result, under its older name.",
+    inputSchema: ResultInput,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
-  async ({ runId }, extra) => {
-    if (!book.has(runId)) {
-      return {
-        content: [
-          { type: "text", text: `No purchase with run id "${runId}" since this server started.` },
-        ],
-        isError: true,
-      };
-    }
-    return (await book.wait(runId, progress(extra))) ?? pendingResult(runId);
-  },
+  result,
 );
 
 await server.connect(new StdioServerTransport());
-log("ready", { market: marketUrl, buyer: buyer.address, events: Boolean(env.AGENT_TOKEN) });
+log("ready", {
+  market: marketUrl,
+  buyer: buyer.address,
+  account: env.BUYER_ACCOUNT_INDEX,
+  events: Boolean(env.AGENT_TOKEN),
+  outputDir: env.PEKKAH_OUTPUT_DIR ?? null,
+});

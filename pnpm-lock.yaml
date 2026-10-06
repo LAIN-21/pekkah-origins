@@ -300,6 +300,9 @@ importers:
       '@pekkah/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@x402/cardano':
+        specifier: 2.26.0
+        version: 2.26.0
       jpeg-js:
         specifier: 0.4.4
         version: 0.4.4

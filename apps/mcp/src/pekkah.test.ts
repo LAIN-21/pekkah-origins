@@ -246,16 +246,39 @@ describe("choose", () => {
 });
 
 describe("pekkah_market", () => {
-  it("lists hardware, prices and measured speed", async () => {
+  it("lists hardware as reported, prices, and speed as measured", async () => {
     const { deps } = setup([], []);
     const result = await marketText(deps);
     const line = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(line).toContain(
-      "Worker A (A), online: NVIDIA RTX 4000 Ada Generation, 20 GB VRAM, 8 vCPU",
+      "Worker A (A), online: NVIDIA RTX 4000 Ada Generation, 20 GB VRAM, 8 vCPU (reported by the machine)",
     );
     expect(line).toContain("image $0.05");
-    expect(line).toContain("CPU render measured 1.5 s (answer checked)");
+    expect(line).toContain("Measured by the market: CPU render 1.5 s (answer checked)");
     expect(line).toContain("1024² image in 6.9 s (timed)");
+    expect(line).not.toContain("Joining");
+  });
+
+  it("names the escrow seller and lists probation workers apart, under their display id", async () => {
+    const { deps } = setup([], []);
+    const joining: WorkerSnapshot = {
+      ...worker,
+      workerId: "joining-a1b2c3",
+      name: "whatever it sent",
+      hardware: { cpuModel: "Ryzen", vcpus: 4, memGb: 8 },
+      selling: false,
+      escrowSeller: false,
+    };
+    deps.fetch = (async () =>
+      new Response(
+        JSON.stringify([{ ...worker, selling: true, escrowSeller: true }, joining]),
+      )) as unknown as typeof fetch;
+    const result = await marketText(deps);
+    const line = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(line).toContain("Worker A (A), online, sells through Masumi escrow:");
+    expect(line).toContain("Joining the network (on probation");
+    expect(line).toContain("- joining-a1b2c3, online: 4 vCPU, 8 GB RAM (reported by the machine).");
+    expect(line).not.toContain("whatever it sent");
   });
 });
 
