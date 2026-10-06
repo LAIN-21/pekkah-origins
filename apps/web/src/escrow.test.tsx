@@ -71,6 +71,19 @@ describe("escrow runs (PR-08m)", () => {
     });
   }
 
+  it("fixture locks: deadlines follow the lock's time, and each request has its own hash", () => {
+    const locks = (["gpu-image-escrow", "fractal-escrow"] as const).map((scenario) => {
+      const log = fixtureRunLog(scenario, 7);
+      const lock = log.events.find((e) => e.type === "escrow.locked");
+      if (lock?.type !== "escrow.locked") throw new Error("no lock");
+      return lock;
+    });
+    for (const lock of locks) {
+      expect(Number(lock.data.payByTime) - Date.parse(lock.ts)).toBe(600_000);
+    }
+    expect(locks[0]?.data.inputHash).not.toBe(locks[1]?.data.inputHash);
+  });
+
   it("a default payment still says who was paid", () => {
     const log = fixtureRunLog("gpu-image");
     const run = deriveRun(log.runId, log.events);

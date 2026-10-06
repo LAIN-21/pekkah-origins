@@ -115,6 +115,8 @@ type EventInput = {
   type: EventType;
   source: JobEvent["source"];
   data: unknown;
+  /** Data that depends on the event's own timestamp (the escrow deadlines). */
+  dataAt?: (ts: string) => unknown;
   jobId?: string;
 };
 
@@ -169,6 +171,8 @@ function attempt(
     gpu?: boolean;
     /** Bought through the escrow route: the funds are locked, never paid. */
     escrow?: boolean;
+    /** The quoted request, which the escrow commits to. */
+    request?: unknown;
   },
 ): { steps: Step[]; end: number } {
   const tag = ++attemptTag;
@@ -321,7 +325,7 @@ function attempt(
         },
       },
     },
-    ...(options.escrow ? [escrowStep(at + 50, txHash, o)] : []),
+    ...(options.escrow ? [escrowStep(at + 50, txHash, o, options.request)] : []),
     {
       at: at + 100,
       event: {
@@ -359,27 +363,50 @@ function attempt(
 }
 
 /** The escrow.locked event: the lock's terms, with Masumi's default deadlines (PLAN 4.8). */
-function escrowStep(at: number, txHash: string, o: Offer): Step {
-  const payBy = Date.now() + 600_000;
-  const minutes = (m: number) => String(payBy + m * 60_000);
+/**
+ * A made-up 64-hex "commitment" that differs per request (FNV-1a rounds over its
+ * JSON). The real inputHash is Masumi's commitment to the quoted request.
+ */
+function fakeRequestHash(request: unknown): string {
+  const text = JSON.stringify(request);
+  let out = "";
+  for (let round = 0; round < 8; round++) {
+    let h = 0x811c9dc5 ^ round;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    out += (h >>> 0).toString(16).padStart(8, "0");
+  }
+  return out;
+}
+
+function escrowStep(at: number, txHash: string, o: Offer, request: unknown): Step {
+  const inputHash = fakeRequestHash(request);
   return {
     at,
     event: {
       type: "escrow.locked",
       source: "market",
-      data: {
-        txHash,
-        escrowAddress: ESCROW_ADDRESS,
-        sellerAddress: o.payTo,
-        amountAtomic: o.priceAtomic,
-        asset: o.asset,
-        collateralLovelace: COLLATERAL_LOVELACE,
-        inputHash: fakeHex(7, "c0de"),
-        payByTime: String(payBy),
-        submitResultTime: minutes(15),
-        unlockTime: minutes(35),
-        externalDisputeUnlockTime: minutes(55),
-        explorerUrl: explorerTxUrl(txHash),
+      data: null,
+      // Deadlines follow the lock's own time, also in a replay of an old run.
+      dataAt: (ts) => {
+        const payBy = Date.parse(ts) + 600_000;
+        const minutes = (m: number) => String(payBy + m * 60_000);
+        return {
+          txHash,
+          escrowAddress: ESCROW_ADDRESS,
+          sellerAddress: o.payTo,
+          amountAtomic: o.priceAtomic,
+          asset: o.asset,
+          collateralLovelace: COLLATERAL_LOVELACE,
+          inputHash,
+          payByTime: String(payBy),
+          submitResultTime: minutes(15),
+          unlockTime: minutes(35),
+          externalDisputeUnlockTime: minutes(55),
+          explorerUrl: explorerTxUrl(txHash),
+        };
       },
     },
   };
@@ -441,6 +468,7 @@ export function scenarioSteps(scenario: ScenarioName, runId: string): Step[] {
       deadlineSec,
       gpu: true,
       escrow: scenario === "gpu-image-escrow",
+      request,
     });
     steps.push(...paid.steps);
     end = paid.end;
@@ -495,7 +523,7 @@ export function scenarioSteps(scenario: ScenarioName, runId: string): Step[] {
         "A asks $0.05, within my budget, and sells through Masumi escrow.",
       ]),
     );
-    const paid = attempt(1600, a, runId, { jobSec: 5.8, deadlineSec, escrow: true });
+    const paid = attempt(1600, a, runId, { jobSec: 5.8, deadlineSec, escrow: true, request });
     steps.push(...paid.steps);
     end = paid.end;
   } else if (scenario === "cpu-tight") {
@@ -611,11 +639,13 @@ let eventSeq = 0;
 
 function toEvent(prefix: string, input: EventInput, runId: string, ts: string): JobEvent {
   eventSeq += 1;
+  const { dataAt, ...rest } = input;
   return JobEvent.parse({
     id: `${prefix}${String(eventSeq).padStart(8, "0")}`,
     ts,
     runId,
-    ...input,
+    ...rest,
+    data: dataAt ? dataAt(ts) : rest.data,
   });
 }
 
