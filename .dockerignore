@@ -1,0 +1,23 @@
+# Build context for the Node apps (root Dockerfile). Workload images build from
+# their own folders, so this file doesn't affect them.
+**/node_modules
+**/dist
+**/.vite
+**/*.tsbuildinfo
+**/coverage
+**/*.log
+.git
+.github
+.claude
+.pekkah
+.env
+.env.*
+**/*.env
+!**/*.env.example
+DEPLOYED
+docs
+infra
+deploy
+scripts
+workloads
+results

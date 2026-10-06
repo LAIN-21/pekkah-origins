@@ -1,0 +1,12 @@
+#cloud-config
+package_update: true
+packages:
+  - git
+  - curl
+  - ca-certificates
+runcmd:
+  # A 2 GB swap file so image builds don't run out of memory on the small droplets.
+  - [sh, -c, "test -f /swapfile || (fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab)"]
+  - [sh, -c, "command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh"]
+  - [systemctl, enable, --now, docker]
+  - [mkdir, -p, /opt/pekkah, /var/lib/pekkah]

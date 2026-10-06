@@ -1,0 +1,37 @@
+# Compose project pekkah-worker, on workers A, B and C (A adds worker.gpu.yml).
+#   docker compose -p pekkah-worker -f deploy/worker.compose.yml --env-file /opt/pekkah/env/worker.env up -d --build
+# The worker starts job containers through the host's Docker socket, so
+# /var/lib/pekkah is mounted at the same path: -v paths it passes are host paths.
+
+services:
+  worker:
+    build:
+      context: ..
+      target: worker
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: pekkah/worker:local
+    restart: unless-stopped
+    init: true
+    environment:
+      WORKER_ID: ${WORKER_ID}
+      WORKER_NAME: ${WORKER_NAME}
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      MARKET_WS_URL: ${MARKET_WS_URL}
+      PAYOUT_ADDRESS: ${PAYOUT_ADDRESS}
+      PRICE_FRACTAL_USD: ${PRICE_FRACTAL_USD}
+      PRICE_IMAGE_USD: ${PRICE_IMAGE_USD:-}
+      SCHEDULE: ${SCHEDULE:-}
+      JOB_CPUS: ${JOB_CPUS}
+      JOB_MEMORY: ${JOB_MEMORY}
+      FRACTAL_IMAGE: ${FRACTAL_IMAGE:-pekkah/fractal:local}
+      FLUX_URL: ${FLUX_URL:-}
+      DATA_DIR: ${DATA_DIR:-/var/lib/pekkah}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/pekkah:/var/lib/pekkah
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

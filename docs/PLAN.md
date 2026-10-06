@@ -77,7 +77,7 @@ Judging. Cardano track: technical execution and use of Cardano 30% (Masumi, eUTx
 | Repo | `github.com/LAIN-21/pekkah-origins` (public), local `~/Developer/pekkah-origins`. My older private repo `LAIN-21/pekkah` is unrelated: never push to it |
 | Cloud | DigitalOcean, region `tor1`, SSH key id `59840566`, $85 prepaid, plan ≤ $65 through Thursday |
 | Worker A | Existing GPU droplet named `pekkah` (called gpu-hold in Monday notes), `159.203.0.34`, 500 GB disk, RTX 4000 Ada 20 GB, 8 vCPU, 32 GB RAM, image `gpu-h100x1-base` (Docker and NVIDIA toolkit preinstalled), about $0.76/h. Kept empty until Tue 12:00 |
-| New droplets | market `s-2vcpu-4gb` plus a reserved IP; worker B `s-8vcpu-16gb`; worker C `s-2vcpu-2gb`; image `ubuntu-24-04-x64`. Confirm slugs with `doctl compute size list` |
+| New droplets | market `s-2vcpu-4gb` plus a reserved IP; worker B `s-8vcpu-16gb-amd` in `nyc3` (`s-8vcpu-16gb` doesn't exist and no 8 vCPU basic size is offered in tor1; workers dial out, so the region only adds latency); worker C `s-2vcpu-2gb`; image `ubuntu-24-04-x64` |
 | Chain | Cardano preprod, x402 network id `cardano:preprod`. Explorer: `https://preprod.cardanoscan.io/transaction/<hash>` |
 | Provider | Blockfrost project `pekkah-preprod` (`BLOCKFROST_PROJECT_ID`), base URL `https://cardano-preprod.blockfrost.io/api/v0`, 50k requests a day |
 | Asset | tUSDM, 6 decimals: `e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d` (this is `USDM_PREPROD_ASSET` in `@x402/cardano`). Masumi's dispenser hands out a different "tUSDM" (policy `16a55b2a…`); `PEKKAH_ASSET` overrides the default if my buyer holds that one |
