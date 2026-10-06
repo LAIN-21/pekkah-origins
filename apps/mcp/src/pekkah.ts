@@ -209,9 +209,6 @@ export async function generateImage(
       );
     }
     const job = body.data;
-    const png = await f(`${deps.marketUrl}${job.resultUrl}`, {
-      signal: AbortSignal.timeout(30_000),
-    });
     const totalMs = Date.now() - started;
     await emit(
       "run.completed",
@@ -224,19 +221,29 @@ export async function generateImage(
       `Made in ${(job.durationMs / 1000).toFixed(1)} s on ${job.workerId}; sha256 ${job.sha256}.`,
       "Cardano preprod: test tokens, no real money.",
     ].join("\n");
-    if (!png.ok) {
-      return {
-        content: [text(`${receipt}\n(The image couldn't be fetched: HTTP ${png.status}.)`)],
-      };
+    // Paid by now: whatever happens to the download, the receipt goes back.
+    try {
+      const png = await f(`${deps.marketUrl}${job.resultUrl}`, {
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!png.ok) {
+        return {
+          content: [text(`${receipt}\n(The image couldn't be fetched: HTTP ${png.status}.)`)],
+        };
+      }
+      const data = Buffer.from(await png.arrayBuffer()).toString("base64");
+      return { content: [{ type: "image", data, mimeType: job.mime }, text(receipt)] };
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      return { content: [text(`${receipt}\n(The image couldn't be fetched: ${why}.)`)] };
     }
-    const data = Buffer.from(await png.arrayBuffer()).toString("base64");
-    return { content: [{ type: "image", data, mimeType: job.mime }, text(receipt)] };
   }
   return failed("The offers kept expiring before payment; nothing was charged. Try again.");
 }
 
 /** How long one tool call waits for a purchase: under the 60 s that MCP clients often allow. */
 export const WAIT_MS = 45_000;
+/** Finished purchases kept for pekkah_get_image; ones still in flight are never dropped. */
 const KEEP = 20;
 
 export function pendingResult(runId: string): ToolResult {
@@ -254,11 +261,12 @@ export function pendingResult(runId: string): ToolResult {
  * request, so the first call returns early with a run id and pekkah_get_image collects it.
  */
 export class PurchaseBook {
-  private readonly runs = new Map<string, Promise<ToolResult>>();
+  private readonly runs = new Map<string, { done: Promise<ToolResult>; settled: boolean }>();
 
   constructor(
     private readonly deps: Deps,
     private readonly waitMs = WAIT_MS,
+    private readonly keep = KEEP,
   ) {}
 
   has(runId: string): boolean {
@@ -270,10 +278,15 @@ export class PurchaseBook {
     const done = generateImage(input, { ...this.deps, newRunId: () => runId }).catch(
       (err: unknown) => fail(`Pekkah failed: ${err instanceof Error ? err.message : String(err)}`),
     );
-    this.runs.set(runId, done);
-    for (const old of this.runs.keys()) {
-      if (this.runs.size <= KEEP) break;
-      this.runs.delete(old);
+    const entry = { done, settled: false };
+    void done.then(() => {
+      entry.settled = true;
+    });
+    this.runs.set(runId, entry);
+    // Oldest first, and only finished ones: a purchase in flight may still be paying.
+    for (const [old, other] of this.runs) {
+      if (this.runs.size <= this.keep) break;
+      if (other.settled) this.runs.delete(old);
     }
     return runId;
   }
@@ -283,7 +296,7 @@ export class PurchaseBook {
     runId: string,
     tick?: (waitedSec: number) => Promise<void>,
   ): Promise<ToolResult | null> {
-    const done = this.runs.get(runId);
+    const done = this.runs.get(runId)?.done;
     if (!done) return null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let ticker: ReturnType<typeof setInterval> | undefined;

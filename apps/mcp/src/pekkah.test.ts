@@ -179,6 +179,20 @@ describe("pekkah_generate_image", () => {
     expect(calls.events.at(-1)).toBe("run.failed");
   });
 
+  it("keeps the receipt when the image download fails after paying", async () => {
+    const { deps } = setup([quote()], [paid]);
+    const market = deps.fetch as typeof fetch;
+    deps.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (String(input).endsWith("/api/results/job1")) throw new Error("socket hang up");
+      return market(input, init);
+    }) as typeof fetch;
+    const result = await generateImage({ prompt: "x", maxUsd: 0.05 }, deps);
+    expect(result.isError).toBeUndefined();
+    const line = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(line).toContain(`https://preprod.cardanoscan.io/transaction/${TX}`);
+    expect(line).toContain("The image couldn't be fetched: socket hang up.");
+  });
+
   it("asks again once when the offer was gone before paying", async () => {
     const { deps, calls } = setup(
       [quote(), quote()],
@@ -250,6 +264,28 @@ describe("PurchaseBook", () => {
     const result = await book.wait(runId);
     expect(result?.content[0]?.type).toBe("image");
     expect(book.has("someone-else")).toBe(false);
+  });
+
+  it("never evicts a purchase that is still in flight", async () => {
+    const { deps } = setup([quote(), quote(), quote()], []);
+    let n = 0;
+    deps.newRunId = () => `run${++n}`;
+    let calls = 0;
+    deps.buyer.buy = async () => {
+      calls += 1;
+      // The first purchase never finishes; the others settle at once.
+      if (calls === 1) return new Promise<BuyResult>(() => {});
+      return { durationMs: 1, ...paid } as BuyResult;
+    };
+    const book = new PurchaseBook(deps, 1000, 1);
+    const pending = book.start({ prompt: "a", maxUsd: 0.05 });
+    await new Promise((r) => setTimeout(r, 20));
+    const finished = book.start({ prompt: "b", maxUsd: 0.05 });
+    expect((await book.wait(finished))?.content[0]?.type).toBe("image");
+    const latest = book.start({ prompt: "c", maxUsd: 0.05 });
+    expect(book.has(pending)).toBe(true);
+    expect(book.has(finished)).toBe(false);
+    expect(book.has(latest)).toBe(true);
   });
 
   it("turns a crash into an error result instead of a rejected promise", async () => {

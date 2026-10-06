@@ -2,8 +2,8 @@
 // Starts the MCP server over stdio the way Claude Desktop does, lists its tools and calls
 // pekkah_market (free). With --buy it also calls pekkah_generate_image: a real payment.
 // The server reads its own env (MARKET_URL, PEKKAH_ENV_FILE); this script never sees secrets.
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -54,6 +54,7 @@ if (values.buy) {
     if (c.type === "text") console.log(c.text);
     if (c.type === "image" && c.data) {
       const file = join(appDir, "..", "..", "results", "mcp-smoke.png");
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, Buffer.from(c.data, "base64"));
       console.log(`image: ${c.data.length} base64 chars, saved to results/mcp-smoke.png`);
     }
