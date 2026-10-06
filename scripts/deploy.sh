@@ -115,7 +115,8 @@ merged_into_main() {
   local main_sha
   main_sha=$(git ls-remote "$REPO_URL" refs/heads/main | cut -f1)
   [ -n "$main_sha" ] || return 1
-  git -C "$ROOT" fetch -q origin main 2>/dev/null || true
+  # From the same repository the sha came from, so the commit is known locally.
+  git -C "$ROOT" fetch -q "$REPO_URL" main 2>/dev/null || true
   git -C "$ROOT" merge-base --is-ancestor "$1" "$main_sha" 2>/dev/null
 }
 
