@@ -56,6 +56,7 @@ export interface BuyerEvent {
     amountAtomic: string;
     transferMethod: TransferMethod;
     offerId?: string;
+    ttlSlot?: string;
   };
 }
 
@@ -124,6 +125,26 @@ function buyerSigner(config: BuyerConfig) {
   }
 }
 
+/** Up to 3 more tries with the same PAYMENT-SIGNATURE, 2, 4 and 8 s apart. */
+async function resume(url: string, init: RequestInit, paymentHeader: string, first: unknown) {
+  let last = first;
+  for (const delay of [2_000, 4_000, 8_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      return await fetch(url, {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          "PAYMENT-SIGNATURE": paymentHeader,
+        },
+      });
+    } catch (err) {
+      last = err;
+    }
+  }
+  throw last;
+}
+
 export function createBuyer(config: BuyerConfig): Buyer {
   const signer = buyerSigner(config);
   const perPayment = usdToAtomic(config.caps.perPaymentUsd);
@@ -171,6 +192,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
           amountAtomic: paymentPayload.accepted.amount,
           transferMethod: pending.expect.transferMethod ?? "default",
           ...(pending.offerId ? { offerId: pending.offerId } : {}),
+          ...(pending.ttlSlot ? { ttlSlot: pending.ttlSlot } : {}),
         },
       });
       if (reported) {
@@ -208,11 +230,20 @@ export function createBuyer(config: BuyerConfig): Buyer {
         };
         const current = pending;
         try {
-          const res = await fetchWithPayment(request.url, {
+          const init: RequestInit = {
             method: request.method ?? "POST",
             headers: { "content-type": "application/json", ...request.headers },
             ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}),
-          });
+          };
+          let res: Response;
+          try {
+            res = await fetchWithPayment(request.url, init);
+          } catch (err) {
+            // A network error after signing: re-send the same payment, which the market
+            // answers from its records (one job, one transaction per txHash).
+            if (!current.paymentHeader) throw err;
+            res = await resume(request.url, init, current.paymentHeader, err);
+          }
           let settle: SettleResponse | undefined;
           try {
             settle = http.getPaymentSettleResponse((name) => res.headers.get(name));

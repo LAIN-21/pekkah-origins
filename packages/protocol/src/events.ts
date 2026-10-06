@@ -68,6 +68,8 @@ export const PaymentSignedEvent = event(
     amountAtomic: AtomicAmount,
     offerId: Id.optional(),
     transferMethod: TransferMethod.optional(),
+    /** From this slot on the signed transaction can never land (proof for cancellations). */
+    ttlSlot: z.string().regex(/^\d+$/).optional(),
   }),
 );
 export const AgentRerouteEvent = event(
