@@ -13,12 +13,41 @@ import type { JobContext, JobOutput, Workload } from "./types.js";
 export interface ImageConfig {
   /** http://flux:8000 on worker A. */
   fluxUrl: string;
+  /** The result cap; RESULT_MAX_BYTES (base64 must fit the 32 MB WebSocket limit). */
+  maxBytes?: number;
 }
 
 const HEALTH_TIMEOUT_MS = 3_000;
 /** The worker polls ready() every 5 s; a fresh answer is reused for this long. */
 const HEALTH_CACHE_MS = 4_000;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * Reads a response body, but never more than `max` bytes: a declared length over the cap
+ * is refused before reading, and the stream is cut off as soon as it passes the cap.
+ */
+export async function readCapped(res: Response, max: number): Promise<Buffer> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`result too large: ${declared} bytes declared, the cap is ${max}`);
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`result too large: over ${max} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total);
+}
 
 /** Width and height from a PNG's IHDR chunk, or null if the bytes aren't a PNG. */
 export function pngSize(data: Buffer): { width: number; height: number } | null {
@@ -83,8 +112,7 @@ export function createImageWorkload(
         const detail = (await res.text().catch(() => "")).slice(0, 200);
         throw new Error(`flux answered ${res.status}${detail ? `: ${detail}` : ""}`);
       }
-      const data = Buffer.from(await res.arrayBuffer());
-      if (data.length > RESULT_MAX_BYTES) throw new Error(`result too large: ${data.length} bytes`);
+      const data = await readCapped(res, cfg.maxBytes ?? RESULT_MAX_BYTES);
       const dims = pngSize(data);
       if (!dims) throw new Error("flux returned bytes that are not a PNG");
       if (dims.width !== size || dims.height !== size) {

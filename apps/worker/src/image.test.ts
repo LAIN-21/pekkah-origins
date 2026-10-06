@@ -1,7 +1,7 @@
 import type { ImageParams } from "@pekkah/protocol";
 import { createLogger } from "@pekkah/runtime";
 import { describe, expect, it } from "vitest";
-import { createImageWorkload, pngSize } from "./workloads/image.js";
+import { createImageWorkload, pngSize, readCapped } from "./workloads/image.js";
 import type { JobContext } from "./workloads/types.js";
 
 /** A PNG signature and IHDR chunk: enough for the size check. */
@@ -103,6 +103,29 @@ describe("image workload", () => {
       ),
     ).rejects.toThrow("canceled before start");
     expect(f.calls).toHaveLength(0);
+  });
+
+  it("refuses a result over the cap without reading all of it", async () => {
+    const declared = new Response(fakePng(1024, 1024), {
+      headers: { "content-length": "999999999" },
+    });
+    await expect(readCapped(declared, 1000)).rejects.toThrow("999999999 bytes declared");
+
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(400));
+      },
+    });
+    await expect(readCapped(new Response(endless), 1000)).rejects.toThrow("over 1000 bytes");
+    expect(pulled).toBeLessThan(10);
+
+    const w = createImageWorkload(
+      { fluxUrl: "http://flux:8000", maxBytes: 20 },
+      fakeFetch(() => new Response(fakePng(1024, 1024))).impl,
+    );
+    await expect(w.run(ctx())).rejects.toThrow("result too large");
   });
 
   it("reads PNG dimensions from the IHDR chunk", () => {

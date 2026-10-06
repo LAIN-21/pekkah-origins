@@ -77,9 +77,13 @@ for (let i = 0; i < Number(values.runs); i++) {
     console.error(`run ${i + 1}: ${res.status} ${JSON.stringify(body)}`);
     process.exit(1);
   }
-  const png = Buffer.from(
-    await (await fetch(`${base}${String(body.resultUrl)}`, { headers: auth })).arrayBuffer(),
-  );
+  const result = await fetch(`${base}${String(body.resultUrl)}`, { headers: auth });
+  if (!result.ok) {
+    // The market keeps only the last few dev results; a 404 means it was evicted.
+    console.error(`run ${i + 1}: the result fetch answered ${result.status}`);
+    process.exit(1);
+  }
+  const png = Buffer.from(await result.arrayBuffer());
   const sha256 = createHash("sha256").update(png).digest("hex");
   const file = join(out, `image-${i + 1}.png`);
   writeFileSync(file, png);
