@@ -3,3 +3,5 @@ packages:
   - apps/*
 allowBuilds:
   esbuild: true
+overrides:
+  "@evolution-sdk/evolution": 0.5.14
