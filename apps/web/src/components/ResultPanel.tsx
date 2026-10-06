@@ -23,14 +23,15 @@ export function ResultPanel({ run, name }: { run: RunView; name: (workerId: stri
     return null;
   }
   const completed = a.completed?.data;
+  const url = a.receipt.data.resultUrl;
   return (
     <div className="card">
       <h3>Result</h3>
-      <img
-        className="result"
-        src={a.receipt.data.resultUrl}
-        alt="The delivered result of the job"
-      />
+      {url ? (
+        <img className="result" src={url} alt="The delivered result of the job" />
+      ) : (
+        <p className="muted">The market didn't attach the result to this receipt.</p>
+      )}
       {completed ? (
         <p className="small muted">
           Made by {name(completed.workerId)} in {formatMs(completed.durationMs)} · sha256{" "}
