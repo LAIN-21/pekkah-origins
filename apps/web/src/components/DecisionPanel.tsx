@@ -1,12 +1,6 @@
-import {
-  type ComputeRequest,
-  type EventOf,
-  formatUsd,
-  type Quote,
-  type RejectionReason,
-  SCENARIOS,
-} from "@pekkah/protocol";
-import { formatSeconds } from "../format";
+import { type EventOf, formatUsd, type Quote, type RejectionReason } from "@pekkah/protocol";
+import { overBudgetText } from "../describe";
+import { formatSeconds, requestLine, requestWhat } from "../format";
 import type { RunView } from "../run";
 
 const REASON_TEXT: Record<RejectionReason, string> = {
@@ -23,31 +17,20 @@ const REASON_TEXT: Record<RejectionReason, string> = {
   over_budget: "over budget",
 };
 
+/** The run's header, from what run.started says: the request and who started it. */
 export function RequestCard({ run }: { run: RunView }) {
   const r = run.started?.data.request;
   if (!r) return null;
   return (
     <div className="card">
-      <h3>What my agent asked for</h3>
-      {run.scenario && <p>{SCENARIOS[run.scenario].summary}</p>}
+      <div className="row between">
+        <h3>What my agent asked for</h3>
+        {run.client ? <span className="chip info">{run.client}</span> : null}
+      </div>
+      <p className="request-what">{requestWhat(r)}</p>
       <p className="small muted">{requestLine(r)}</p>
     </div>
   );
-}
-
-function requestLine(r: ComputeRequest): string {
-  const parts: string[] = [];
-  if (r.workload === "image") {
-    parts.push(`Image ${r.params.size}², ${r.params.steps} steps: “${r.params.prompt}”`);
-  } else {
-    parts.push(`CPU render, preset ${r.params.preset}`);
-  }
-  if (r.constraints.gpu)
-    parts.push(`GPU${r.constraints.minVramGb ? ` ≥ ${r.constraints.minVramGb} GB` : ""}`);
-  parts.push(`deadline ${r.constraints.deadlineSec} s`);
-  parts.push(`at most ${formatUsd(r.budget.maxUsd)}`);
-  if (r.constraints.exclude?.length) parts.push(`not ${r.constraints.exclude.join(", ")}`);
-  return parts.join(" · ");
 }
 
 interface DecisionProps {
@@ -60,27 +43,34 @@ export function DecisionPanel({ run, name }: DecisionProps) {
   return (
     <div className="card">
       <h3>Why my agent chose</h3>
-      {run.quotes.map((q, i) => (
-        <QuoteBlock
-          key={q.id}
-          quote={q.data.quote}
-          decision={decisionAfter(run.decisions, q)}
-          name={name}
-          heading={
-            run.quotes.length > 1 ? (i === 0 ? "First quote" : "After rerouting") : undefined
-          }
-        />
-      ))}
+      {run.quotes.map((q, i) => {
+        const next = run.quotes[i + 1];
+        return (
+          <QuoteBlock
+            key={q.id}
+            quote={q.data.quote}
+            decision={decisionFor(run.decisions, q, next)}
+            name={name}
+            heading={
+              run.quotes.length > 1
+                ? `Quote ${i + 1} · budget ${formatUsd(q.data.quote.request.budget.maxUsd)}`
+                : undefined
+            }
+            waiting={!next && run.status === "running"}
+          />
+        );
+      })}
     </div>
   );
 }
 
-/** The decision my agent emitted for this quote: the first one after it. */
-function decisionAfter(
+/** The decision my agent emitted for this quote: after it, and before the next quote. */
+export function decisionFor(
   decisions: EventOf<"agent.decision">[],
   quote: EventOf<"quote.issued">,
+  next?: EventOf<"quote.issued">,
 ): EventOf<"agent.decision"> | undefined {
-  return decisions.find((d) => d.id > quote.id);
+  return decisions.find((d) => d.id > quote.id && (!next || d.id < next.id));
 }
 
 interface Row {
@@ -112,7 +102,11 @@ function rows(q: Quote): Row[] {
     out.push({
       workerId: r.workerId,
       verdict: "rejected",
-      text: `${REASON_TEXT[r.reason]}: ${r.detail}`,
+      // The market's detail often just repeats the reason ("No GPU"): say it once.
+      text:
+        r.detail.toLowerCase() === REASON_TEXT[r.reason].toLowerCase()
+          ? r.detail
+          : `${REASON_TEXT[r.reason]}: ${r.detail}`,
     });
   }
   return out.sort((a, b) => a.workerId.localeCompare(b.workerId));
@@ -123,11 +117,14 @@ function QuoteBlock({
   decision,
   name,
   heading,
+  waiting,
 }: {
   quote: Quote;
   decision?: EventOf<"agent.decision">;
   name: (workerId: string) => string;
   heading?: string;
+  /** The newest quote of an unfinished run: no decision on it yet. */
+  waiting: boolean;
 }) {
   const chosen = decision?.data.chosen?.workerId;
   return (
@@ -181,8 +178,17 @@ function QuoteBlock({
               <li key={reason}>{reason}</li>
             ))}
           </ul>
+          {decision.data.overBudget ? (
+            <p className="statement small">{overBudgetText(decision.data.overBudget)}</p>
+          ) : null}
         </div>
-      ) : null}
+      ) : (
+        <p className="small muted">
+          {waiting
+            ? "My agent hasn't decided yet."
+            : "My agent didn't take an offer from this quote."}
+        </p>
+      )}
     </div>
   );
 }

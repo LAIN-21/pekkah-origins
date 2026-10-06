@@ -1,5 +1,21 @@
-import { type JobEvent, MASUMI_LOCK_LABEL, SCENARIOS } from "@pekkah/protocol";
-import { formatAsset, formatMs, formatSeconds, formatUsd, short } from "./format";
+import {
+  type EventOf,
+  type JobEvent,
+  MASUMI_LOCK_LABEL,
+  MASUMI_REFUNDED_LABEL,
+  MASUMI_RELEASED_LABEL,
+  SCENARIOS,
+} from "@pekkah/protocol";
+import {
+  formatAsset,
+  formatLovelace,
+  formatMs,
+  formatSeconds,
+  formatUsd,
+  requestLine,
+  requestWhat,
+  short,
+} from "./format";
 import { knownScenario } from "./run";
 
 export type Tone = "neutral" | "good" | "bad" | "info" | "warn";
@@ -23,14 +39,38 @@ export function sourceLabel(e: JobEvent): string {
   return SOURCE_LABEL[e.source];
 }
 
-/** `name(id)` turns a worker id into the name the market reports, e.g. "Worker A". */
-export function describeEvent(e: JobEvent, name: (workerId: string) => string): EventLine {
+/** My agent's statement about an over-budget buy: what it says, never proof (rule 2). */
+export function overBudgetText(o: { budgetUsd: number; priceUsd: number }): string {
+  return `My agent says I approved ${formatUsd(o.priceUsd)} (budget ${formatUsd(o.budgetUsd)}).`;
+}
+
+/** The market's own check of a delivered image, shown as its own row. */
+export function checkLine(e: EventOf<"job.completed">): EventLine | undefined {
+  const c = e.data.check;
+  if (!c) return undefined;
+  return {
+    title: `The market checked the result: a PNG, ${c.width}×${c.height}`,
+    detail: "It has the PNG signature and the size my agent asked for.",
+    tone: "good",
+  };
+}
+
+/**
+ * `name(id)` turns a worker id into the name the market reports, e.g. "Worker A".
+ * `seller(address)` names the worker behind a payout address, when one is listed.
+ */
+export function describeEvent(
+  e: JobEvent,
+  name: (workerId: string) => string,
+  seller: (address: string) => string | undefined = () => undefined,
+): EventLine {
   switch (e.type) {
     case "run.started": {
       const scenario = knownScenario(e.data.scenario);
+      const r = e.data.request;
       return {
-        title: "My agent started a run",
-        detail: scenario && SCENARIOS[scenario].summary,
+        title: e.data.client ? `${e.data.client} started a run` : "My agent started a run",
+        detail: scenario ? SCENARIOS[scenario].summary : `${requestWhat(r)}. ${requestLine(r)}.`,
         tone: "info",
       };
     }
@@ -61,7 +101,10 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
           e.data.kind === "counter"
             ? `My agent accepted the counter-offer: ${who}`
             : `My agent chose ${who}`,
-        detail: e.data.reasons.join(" "),
+        detail: [
+          ...e.data.reasons,
+          ...(e.data.overBudget ? [overBudgetText(e.data.overBudget)] : []),
+        ].join(" "),
         tone: "info",
       };
     }
@@ -150,16 +193,43 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
         href: r.explorerUrl,
       };
     }
-    case "escrow.locked":
+    case "escrow.locked": {
+      const who = seller(e.data.sellerAddress) ?? short(e.data.sellerAddress, 12, 6);
       return {
         title: "Locked in Masumi escrow",
-        detail: `${formatAsset(e.data.amountAtomic)} with ${short(e.data.sellerAddress, 12, 6)} as the seller. ${MASUMI_LOCK_LABEL}`,
+        detail: `${formatAsset(e.data.amountAtomic)} with ${who} as the seller. ${MASUMI_LOCK_LABEL}`,
         tone: "good",
+        href: e.data.explorerUrl,
+      };
+    }
+    case "escrow.result_submitted":
+      return {
+        title: "Result hash submitted on chain",
+        detail: `The seller recorded the delivered result's hash (${short(e.data.resultHash, 10, 6)}) in the escrow. The funds stay locked in escrow until the unlock.`,
+        tone: "good",
+        href: e.data.explorerUrl,
+      };
+    case "escrow.released": {
+      const who = seller(e.data.sellerAddress);
+      return {
+        title: who ? `Released to ${who}` : "Released to the seller",
+        detail: `${formatAsset(e.data.amountAtomic)} to the seller, and the buyer's ${formatLovelace(e.data.collateralReturnLovelace)} of collateral came back. ${MASUMI_RELEASED_LABEL}`,
+        tone: "good",
+        href: e.data.explorerUrl,
+      };
+    }
+    case "escrow.refunded":
+      return {
+        title: "Refunded to the buyer",
+        detail: `${formatAsset(e.data.amountAtomic)} and ${formatLovelace(e.data.collateralReturnLovelace)} of collateral went back to the buyer. ${MASUMI_REFUNDED_LABEL}`,
+        tone: "warn",
         href: e.data.explorerUrl,
       };
     case "agent.reroute":
       return {
-        title: `My agent asks again without ${e.data.excluded.map(name).join(", ")}`,
+        title: e.data.excluded.length
+          ? `My agent asks again without ${e.data.excluded.map(name).join(", ")}`
+          : "My agent asks again",
         detail: e.data.reason,
         tone: "warn",
       };
@@ -187,7 +257,10 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
         detail: e.data.verified ? "Answer checked." : "Timed, not verified.",
         tone: "neutral",
       };
-    default:
-      return { title: "Event", tone: "neutral" };
+    default: {
+      // Every event type has its line: a new one fails to compile here until it has one.
+      const unhandled: never = e;
+      return unhandled;
+    }
   }
 }
