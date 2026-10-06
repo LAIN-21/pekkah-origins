@@ -33,12 +33,24 @@ for (const c of market.content as { type: string; text?: string }[]) {
   if (c.type === "text") console.log(c.text);
 }
 
+type Content = { type: string; text?: string; data?: string }[];
+
 if (values.buy) {
-  const bought = await client.callTool({
+  // Like Claude: when the purchase is still settling, ask for it again by run id.
+  let result = await client.callTool({
     name: "pekkah_generate_image",
     arguments: { prompt: values.buy, maxUsd: Number(values["max-usd"]) },
   });
-  for (const c of bought.content as { type: string; text?: string; data?: string }[]) {
+  for (let i = 0; i < 4; i++) {
+    const pending = (result.content as Content)
+      .map((c) => c.text ?? "")
+      .join(" ")
+      .match(/pekkah_get_image with runId "([^"]+)"/);
+    if (!pending?.[1]) break;
+    console.log(`still settling, asking again for run ${pending[1]}`);
+    result = await client.callTool({ name: "pekkah_get_image", arguments: { runId: pending[1] } });
+  }
+  for (const c of result.content as Content) {
     if (c.type === "text") console.log(c.text);
     if (c.type === "image" && c.data) {
       const file = join(appDir, "..", "..", "results", "mcp-smoke.png");
@@ -46,6 +58,6 @@ if (values.buy) {
       console.log(`image: ${c.data.length} base64 chars, saved to results/mcp-smoke.png`);
     }
   }
-  if (bought.isError) process.exitCode = 1;
+  if (result.isError) process.exitCode = 1;
 }
 await client.close();

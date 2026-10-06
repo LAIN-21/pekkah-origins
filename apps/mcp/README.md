@@ -6,6 +6,7 @@ Claude can buy compute from Pekkah with a tool call. This is a stdio MCP server 
 
 - `pekkah_market`: the machines selling compute right now, with hardware, measured speed, prices and status. Free; nothing is bought.
 - `pekkah_generate_image({ prompt, maxUsd, seed? })`: buys one 1024×1024 image from a GPU worker. `maxUsd` is the most my agent may pay, at most 0.10 (default 0.05). It returns the image plus a receipt with the Cardanoscan link.
+- `pekkah_get_image({ runId })`: a paid image takes 30 to 120 s (the job, then the payment settling on Cardano), longer than many clients wait for one call. So `pekkah_generate_image` waits about 45 s, and if the payment is still settling it returns a run id; this tool then collects the image and the receipt. Buys nothing.
 
 ## Claude Desktop
 

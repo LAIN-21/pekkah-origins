@@ -234,3 +234,76 @@ export async function generateImage(
   }
   return failed("The offers kept expiring before payment; nothing was charged. Try again.");
 }
+
+/** How long one tool call waits for a purchase: under the 60 s that MCP clients often allow. */
+export const WAIT_MS = 45_000;
+const KEEP = 20;
+
+export function pendingResult(runId: string): ToolResult {
+  return {
+    content: [
+      text(
+        `Still in progress: the worker makes the image, then the payment settles on Cardano (usually 20 to 80 s). Nothing is lost and nothing is paid twice. Call pekkah_get_image with runId "${runId}" to get the image and the receipt.`,
+      ),
+    ],
+  };
+}
+
+/**
+ * Purchases outlive a tool call: a paid image takes longer than many clients wait for one
+ * request, so the first call returns early with a run id and pekkah_get_image collects it.
+ */
+export class PurchaseBook {
+  private readonly runs = new Map<string, Promise<ToolResult>>();
+
+  constructor(
+    private readonly deps: Deps,
+    private readonly waitMs = WAIT_MS,
+  ) {}
+
+  has(runId: string): boolean {
+    return this.runs.has(runId);
+  }
+
+  start(input: { prompt: string; maxUsd: number; seed?: number }): string {
+    const runId = this.deps.newRunId();
+    const done = generateImage(input, { ...this.deps, newRunId: () => runId }).catch(
+      (err: unknown) => fail(`Pekkah failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
+    this.runs.set(runId, done);
+    for (const old of this.runs.keys()) {
+      if (this.runs.size <= KEEP) break;
+      this.runs.delete(old);
+    }
+    return runId;
+  }
+
+  /** The outcome, or null if it isn't ready within the wait. `tick` runs every 10 s. */
+  async wait(
+    runId: string,
+    tick?: (waitedSec: number) => Promise<void>,
+  ): Promise<ToolResult | null> {
+    const done = this.runs.get(runId);
+    if (!done) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let ticker: ReturnType<typeof setInterval> | undefined;
+    const started = Date.now();
+    try {
+      if (tick) {
+        ticker = setInterval(
+          () => void tick(Math.round((Date.now() - started) / 1000)).catch(() => {}),
+          10_000,
+        );
+      }
+      return await Promise.race([
+        done,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), this.waitMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      clearInterval(ticker);
+    }
+  }
+}

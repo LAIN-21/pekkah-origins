@@ -7,7 +7,7 @@ import {
   type WorkerSnapshot,
 } from "@pekkah/protocol";
 import { describe, expect, it } from "vitest";
-import { choose, type Deps, generateImage, marketText } from "./pekkah.js";
+import { choose, type Deps, generateImage, marketText, PurchaseBook } from "./pekkah.js";
 
 const ADDR_A = `addr_test1q${"pzry9x8gf2tvdw0s3jn54khce6mua7l".repeat(2).slice(0, 57)}`;
 const TX = "ab".repeat(32);
@@ -228,5 +228,40 @@ describe("pekkah_market", () => {
     expect(line).toContain("image $0.05");
     expect(line).toContain("CPU render measured 1.5 s (answer checked)");
     expect(line).toContain("1024² image in 6.9 s (timed)");
+  });
+});
+
+describe("PurchaseBook", () => {
+  it("returns early with a run id, then hands over the image on a later call", async () => {
+    const { deps } = setup([quote()], []);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    deps.buyer.buy = async () => {
+      await gate;
+      return { durationMs: 1, ...paid } as BuyResult;
+    };
+    const book = new PurchaseBook(deps, 50);
+    const runId = book.start({ prompt: "a lighthouse", maxUsd: 0.05 });
+    expect(runId).toBe("run1");
+    expect(await book.wait(runId)).toBeNull();
+    release();
+    const result = await book.wait(runId);
+    expect(result?.content[0]?.type).toBe("image");
+    expect(book.has("someone-else")).toBe(false);
+  });
+
+  it("turns a crash into an error result instead of a rejected promise", async () => {
+    const { deps } = setup([quote()], []);
+    deps.buyer.buy = async () => {
+      throw new Error("blockfrost down");
+    };
+    const book = new PurchaseBook(deps, 1000);
+    const result = await book.wait(book.start({ prompt: "x", maxUsd: 0.05 }));
+    expect(result?.isError).toBe(true);
+    expect(result?.content[0]?.type === "text" && result.content[0].text).toContain(
+      "blockfrost down",
+    );
   });
 });

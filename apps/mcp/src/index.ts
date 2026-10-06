@@ -5,12 +5,20 @@
 import "./stdio-guard.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createBuyer } from "@pekkah/buyer";
 import { AssetId, DEFAULT_ASSET, PEKKAH_VERSION } from "@pekkah/protocol";
 import { readEnv, redact } from "@pekkah/runtime";
 import { monotonicFactory } from "ulid";
 import { z } from "zod";
-import { type Deps, GenerateImageInput, generateImage, marketText } from "./pekkah.js";
+import {
+  type Deps,
+  GenerateImageInput,
+  marketText,
+  PurchaseBook,
+  pendingResult,
+} from "./pekkah.js";
 
 const usd = z.coerce.number().positive();
 const env = readEnv("mcp", {
@@ -84,31 +92,60 @@ server.registerTool(
   async () => marketText(deps),
 );
 
+const book = new PurchaseBook(deps);
+
+/** Progress notifications keep the call alive in clients that reset their timeout on them. */
+function progress(extra: RequestHandlerExtra<ServerRequest, ServerNotification>) {
+  const token = extra._meta?.progressToken;
+  if (token === undefined) return undefined;
+  return (waitedSec: number) =>
+    extra.sendNotification({
+      method: "notifications/progress",
+      params: {
+        progressToken: token,
+        progress: waitedSec,
+        message: `Waiting for the image and the payment to settle (${waitedSec} s)`,
+      },
+    });
+}
+
 server.registerTool(
   "pekkah_generate_image",
   {
     title: "Buy an image on Pekkah",
     description:
-      "Buys one 1024x1024 image from a GPU worker on Pekkah. My agent quotes the market, takes an offer at or below maxUsd, and pays per job with x402 in test tUSDM on Cardano preprod, only after the image is delivered (a failed job charges nothing). Returns the image and a receipt with the transaction link.",
+      "Buys one 1024x1024 image from a GPU worker on Pekkah. My agent quotes the market, takes an offer at or below maxUsd, and pays per job with x402 in test tUSDM on Cardano preprod, only after the image is delivered (a failed job charges nothing). Returns the image and a receipt with the transaction link. If the payment is still settling after about 45 s, it returns a run id instead: then call pekkah_get_image with it.",
     inputSchema: GenerateImageInput,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
-  async (input) => {
-    log("generate image", { maxUsd: input.maxUsd, promptChars: input.prompt.length });
-    try {
-      return await generateImage(input, deps);
-    } catch (err) {
-      log("generate image failed", { error: err instanceof Error ? err.message : String(err) });
+  async (input, extra) => {
+    const runId = book.start(input);
+    log("generate image", { runId, maxUsd: input.maxUsd, promptChars: input.prompt.length });
+    return (await book.wait(runId, progress(extra))) ?? pendingResult(runId);
+  },
+);
+
+server.registerTool(
+  "pekkah_get_image",
+  {
+    title: "Get a Pekkah image",
+    description:
+      "Gets the image and receipt of a purchase that pekkah_generate_image started, by its run id. Waits up to about 45 s. Buys nothing.",
+    inputSchema: {
+      runId: z.string().min(1).max(64).describe("The run id pekkah_generate_image returned."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ runId }, extra) => {
+    if (!book.has(runId)) {
       return {
         content: [
-          {
-            type: "text",
-            text: `Pekkah failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
+          { type: "text", text: `No purchase with run id "${runId}" since this server started.` },
         ],
         isError: true,
       };
     }
+    return (await book.wait(runId, progress(extra))) ?? pendingResult(runId);
   },
 );
 
