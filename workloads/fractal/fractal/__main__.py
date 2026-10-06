@@ -18,6 +18,7 @@ import numpy as np
 from .core import PRESETS, colorize, encode_png, render_rows
 
 PALETTES = {"ember", "ocean", "mint"}
+TILE_SAMPLES = 16_384
 FORMATS = {"png", "raw"}
 
 
@@ -53,7 +54,11 @@ def main() -> int:
     workers = max(1, math.floor(float(os.environ.get("WORKERS", "1"))))
     out = Path(os.environ.get("OUT_DIR", "/out"))
 
-    tile_rows = max(1, math.ceil(preset.height / 64))
+    # Every tile holds about the same number of samples, whatever the preset, so the
+    # per-iteration cost measured on the calibration view carries over to the HD presets
+    # (small tiles stay in cache; big ones run about twice as slow per iteration).
+    samples_per_row = preset.width * preset.supersample * preset.supersample
+    tile_rows = max(1, TILE_SAMPLES // samples_per_row)
     tiles = [
         (params["preset"], params["challenge"], start, min(start + tile_rows, preset.height))
         for start in range(0, preset.height, tile_rows)

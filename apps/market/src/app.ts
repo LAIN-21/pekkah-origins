@@ -19,6 +19,8 @@ export function createApp(options: MarketAppOptions): express.Express {
   // payment gate and the route matching identical URLs (PLAN 4.1, fact 11).
   app.set("case sensitive routing", true);
   app.set("strict routing", true);
+  // Caddy runs on the compose network: trust it (and only private proxies) for req.ip.
+  app.set("trust proxy", "loopback, uniquelocal");
   app.disable("x-powered-by");
 
   app.get("/api/health", (_req, res) => {

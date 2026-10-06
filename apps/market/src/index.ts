@@ -13,7 +13,10 @@ import {
   registerSmokeRoute,
 } from "./dev.js";
 import { EventBus } from "./events.js";
+import { OfferStore } from "./offers.js";
 import { createMarketPayments } from "./payments.js";
+import { registerQuoteRoute } from "./quotes.js";
+import { UiHub } from "./ui.js";
 import { parseWorkerTokens, WorkerRegistry } from "./workers.js";
 
 const env = readEnv("market", {
@@ -30,6 +33,7 @@ const env = readEnv("market", {
   SELLER_A_MNEMONIC: z.string().optional(),
   /** `A:<token>,B:<token>,C:<token>`: the allowlist of workers that may join. */
   WORKER_TOKENS: z.string().min(1),
+  DEMO_DAILY_RUNS: z.coerce.number().int().min(0).default(40),
 });
 const log = createLogger("market");
 if (env.PEKKAH_DEV_ROUTES && !env.DEMO_TOKEN) {
@@ -73,6 +77,7 @@ const registry = new WorkerRegistry({
   log,
   calibrate: createCalibrator(bus, log),
 });
+const offers = new OfferStore();
 const sellers = Object.fromEntries(
   (["A", "B", "C"] as const).flatMap((id) => {
     const address = env[`SELLER_${id}_ADDRESS`];
@@ -88,6 +93,13 @@ const app = createApp({
   routes: (app) => {
     app.get("/api/workers", (_req, res) => {
       res.json(registry.snapshots());
+    });
+    registerQuoteRoute(app, {
+      workers: () => registry.snapshots(),
+      offers,
+      bus,
+      asset: env.PEKKAH_ASSET,
+      log,
     });
     if (env.PEKKAH_DEV_ROUTES && env.DEMO_TOKEN) {
       const guard = bearerGuard(env.DEMO_TOKEN);
@@ -119,10 +131,20 @@ const server = app.listen(env.MARKET_PORT, () => {
   );
 });
 registry.attach(server);
+// The run button arrives in PR-06b; until then the UI sees an idle demo with a full day.
+const ui = new UiHub({
+  bus,
+  workers: () => registry.snapshots(),
+  onWorkersChange: (listener) => registry.onChange(listener),
+  demo: () => ({ running: false, cooldownUntil: null, runsLeftToday: env.DEMO_DAILY_RUNS }),
+  log,
+});
+ui.attach(server);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     log.info({ signal }, "market stopping");
+    ui.close();
     registry.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
