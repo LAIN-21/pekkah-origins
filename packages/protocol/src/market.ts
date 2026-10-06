@@ -113,6 +113,10 @@ export const Job = z.object({
   durationMs: z.number().nonnegative().optional(),
   sha256: Sha256.optional(),
   mime: z.string().optional(),
+  /**
+   * The payment settled, so the result is readable: paid to the worker, or for an escrow job
+   * locked in escrow (nothing reaches the worker).
+   */
   paid: z.boolean(),
   error: z.string().optional(),
 });

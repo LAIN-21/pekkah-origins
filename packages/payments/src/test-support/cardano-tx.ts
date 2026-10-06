@@ -3,7 +3,23 @@
 import { blake2b } from "@noble/hashes/blake2.js";
 import { DEFAULT_ASSET } from "@pekkah/protocol";
 
-type Cbor = number | bigint | Uint8Array | Cbor[] | Map<number | Uint8Array, Cbor> | boolean | null;
+/** A CBOR tag (major type 6), for an inline datum's tag 24. */
+export class Tagged {
+  constructor(
+    readonly tag: number,
+    readonly value: Cbor,
+  ) {}
+}
+
+type Cbor =
+  | number
+  | bigint
+  | Uint8Array
+  | Tagged
+  | Cbor[]
+  | Map<number | Uint8Array, Cbor>
+  | boolean
+  | null;
 
 function head(major: number, n: number | bigint): number[] {
   const v = BigInt(n);
@@ -32,7 +48,10 @@ export function cbor(value: Cbor): Uint8Array {
     else if (v === false) out.push(0xf4);
     else if (typeof v === "number" || typeof v === "bigint") out.push(...head(0, v));
     else if (v instanceof Uint8Array) out.push(...head(2, v.length), ...v);
-    else if (Array.isArray(v)) {
+    else if (v instanceof Tagged) {
+      out.push(...head(6, v.tag));
+      write(v.value);
+    } else if (Array.isArray(v)) {
       out.push(...head(4, v.length));
       for (const item of v) write(item);
     } else {
@@ -49,6 +68,27 @@ export function cbor(value: Cbor): Uint8Array {
 
 const hex = (s: string) => Uint8Array.from(Buffer.from(s, "hex"));
 
+const BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+/** The raw bytes of a bech32 address. No checksum check: test addresses only. */
+export function bech32Bytes(address: string): Uint8Array {
+  const data = address.slice(address.lastIndexOf("1") + 1, -6);
+  const out: number[] = [];
+  let acc = 0;
+  let bits = 0;
+  for (const c of data) {
+    const v = BECH32.indexOf(c);
+    if (v < 0) throw new Error(`not a bech32 character: ${c}`);
+    acc = ((acc << 5) | v) & 0xffff;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return Uint8Array.from(out);
+}
+
 export interface TestTx {
   transaction: string;
   txHash: string;
@@ -56,29 +96,43 @@ export interface TestTx {
   paymentCoin: bigint;
 }
 
-/** A tx paying `amount` of tUSDM (plus `paymentCoin` lovelace) to an enterprise testnet address. */
+/**
+ * A tx paying `amount` of tUSDM (plus `paymentCoin` lovelace) to an enterprise testnet address,
+ * or to `payTo`. With `datum`, the payment output carries it inline (an escrow lock's shape).
+ */
 export function buildTestTx(
-  options: { amount?: bigint; seed?: number; fee?: bigint } = {},
+  options: {
+    amount?: bigint;
+    seed?: number;
+    fee?: bigint;
+    payTo?: string;
+    paymentCoin?: bigint;
+    datum?: Cbor;
+  } = {},
 ): TestTx {
   const seed = options.seed ?? 1;
   const [policy, name] = DEFAULT_ASSET.split(".") as [string, string];
-  const payee = Uint8Array.from([0x60, ...new Array(28).fill(seed)]);
+  const payee = options.payTo
+    ? bech32Bytes(options.payTo)
+    : Uint8Array.from([0x60, ...new Array(28).fill(seed)]);
   const change = Uint8Array.from([0x60, ...new Array(28).fill(seed + 1)]);
   const fee = options.fee ?? 180_000n;
-  const paymentCoin = 1_189_560n;
+  const paymentCoin = options.paymentCoin ?? 1_189_560n;
   const value: Cbor = [
     paymentCoin,
     new Map([[hex(policy), new Map([[hex(name), options.amount ?? 10_000n]])]]),
   ];
+  const payment: Cbor =
+    options.datum === undefined
+      ? [payee, value]
+      : new Map<number, Cbor>([
+          [0, payee],
+          [1, value],
+          [2, [1, new Tagged(24, cbor(options.datum))]],
+        ]);
   const body = new Map<number, Cbor>([
     [0, [[new Uint8Array(32).fill(seed), 0]]],
-    [
-      1,
-      [
-        [payee, value],
-        [change, 5_000_000n],
-      ],
-    ],
+    [1, [payment, [change, 5_000_000n]]],
     [2, fee],
     [3, 120_000_000n],
   ]);

@@ -1,29 +1,42 @@
-// scripts/demo-check.sh [--runs N] [--scenarios a,b] [--no-runs-md]
+// scripts/demo-check.sh [--runs N] [--scenarios a,b] [--escrow] [--no-runs-md]
 // The demo, end to end, against the deployed market (PLAN 9, PR-09). Every run starts through
 // POST /api/demo/run with DEMO_TOKEN, so it shares the hosted agent's run lock and wallet.
 // Failover kills C's job for real (scripts/chaos.sh kill-job c) once it is running. Outcomes
 // come only from /api/runs/:runId/events. Cancelled transactions are then checked on chain.
-// Reads PUBLIC_URL and DEMO_TOKEN from ~/.pekkah/env/market.env; prints neither.
+// --escrow (PR-10) adds one Masumi escrow run at the end, never inside the rounds (locked funds
+// stay locked), checks the Masumi minimum (PLAN 4.9) and writes the evidence block (12.3).
+// --runs 0 --escrow runs only that. Reads PUBLIC_URL and DEMO_TOKEN from
+// ~/.pekkah/env/market.env; prints neither.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { parametersInputHash } from "../packages/payments/src/server.js";
 import {
+  type EscrowLock,
   explorerTxUrl,
+  formatAtomic,
+  formatLovelace,
   formatUsdAtomic,
   type JobEvent,
+  MASUMI_LOCK_LABEL,
   RunLog,
   type ScenarioName,
   type WorkerSnapshot,
 } from "../packages/protocol/src/index.js";
 import { loadLocalEnv } from "../packages/runtime/src/index.js";
+import { updateRunsMd } from "./runs-md.js";
+
+/** Masumi's vested_pay V2 escrow on preprod (PLAN 4.8): the escrow route's payTo. */
+const MASUMI_ESCROW = "addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g";
 
 const root = resolve(import.meta.dirname, "..");
 const { values } = parseArgs({
   options: {
     runs: { type: "string", default: "1" },
     scenarios: { type: "string" },
+    escrow: { type: "boolean", default: false },
     "no-runs-md": { type: "boolean", default: false },
   },
 });
@@ -193,6 +206,109 @@ async function check(scenario: ScenarioName, list: JobEvent[]): Promise<Row> {
   return row;
 }
 
+interface EscrowCheck {
+  pass: boolean;
+  why: string[];
+  block?: string;
+}
+
+const deadline = (posixMs: string) => sgt(new Date(Number(posixMs)).toISOString());
+const hardware = (w: WorkerSnapshot | undefined) =>
+  w
+    ? [
+        w.hardware.gpu ? `${w.hardware.gpu.name} ${w.hardware.gpu.vramGb} GB` : null,
+        `${w.hardware.vcpus} vCPU ${w.hardware.cpuModel}`,
+        `${w.hardware.memGb} GB RAM`,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : "unknown hardware";
+
+/** The Masumi minimum (PLAN 4.9), checked only from the run's events and the chain. */
+async function checkEscrow(
+  scenario: ScenarioName,
+  runId: string,
+  list: JobEvent[],
+  workers: WorkerSnapshot[],
+): Promise<EscrowCheck> {
+  const why: string[] = [];
+  const done = list.find((e) => e.type === "run.completed");
+  if (done?.type !== "run.completed") {
+    const failed = list.find((e) => e.type === "run.failed");
+    why.push(`run failed: ${failed?.type === "run.failed" ? failed.data.reason : "no end event"}`);
+    return { pass: false, why };
+  }
+  const { txHash, jobId, workerId } = done.data;
+  const of = <T extends JobEvent["type"]>(
+    type: T,
+    match: (e: Extract<JobEvent, { type: T }>) => boolean,
+  ) => list.find((e): e is Extract<JobEvent, { type: T }> => e.type === type && match(e as never));
+  const started = of("run.started", () => true);
+  const decision = of("agent.decision", () => true);
+  const signed = of("payment.signed", (e) => e.data.txHash === txHash);
+  const completed = of("job.completed", (e) => e.jobId === jobId);
+  const settled = of("payment.settled", (e) => e.data.txHash === txHash);
+  const locked = of("escrow.locked", (e) => e.data.txHash === txHash);
+  const receipt = of("receipt.issued", (e) => e.data.receipt.txHash === txHash);
+
+  // 1. Autonomous: my agent started, decided and signed, with no human step.
+  if (started?.source !== "agent" || decision?.source !== "agent" || signed?.source !== "agent") {
+    why.push("1: the agent did not start, decide and sign the run itself");
+  }
+  if (signed?.data.transferMethod !== "masumi") why.push("1: the agent did not sign a Masumi lock");
+  // 2. Real compute, delivered; the lock was broadcast only after delivery.
+  if (!completed) why.push("2: no job.completed for the run's job");
+  if (settled?.data.transferMethod !== "masumi") why.push("2/3: no Masumi lock settled");
+  if (completed && settled && completed.id > settled.id)
+    why.push("2: the lock landed before delivery");
+  if (receipt) {
+    const result = await fetch(`${base}${receipt.data.resultUrl}`);
+    if (result.status !== 200) why.push(`2: result not readable (HTTP ${result.status})`);
+    if (receipt.data.receipt.transferMethod !== "masumi") why.push("2: the receipt is not masumi");
+  } else why.push("2: no receipt.issued");
+  // 3. A real lock at Masumi's escrow, on chain.
+  if (!locked) why.push("3: no escrow.locked");
+  if (locked && locked.data.escrowAddress !== MASUMI_ESCROW) {
+    why.push(`3: escrow address ${locked.data.escrowAddress} is not Masumi's vested_pay V2`);
+  }
+  const chain = (await (await fetch(`${base}/api/tx/${txHash}`)).json()) as { found?: boolean };
+  if (!chain.found) why.push("3: the lock transaction is not on chain");
+  // 4. The selected worker is the seller.
+  const worker = workers.find((w) => w.workerId === workerId);
+  const chosen = decision?.data.chosen;
+  if (chosen?.workerId !== workerId)
+    why.push(`4: the agent chose ${chosen?.workerId}, ${workerId} ran`);
+  if (locked && locked.data.sellerAddress !== worker?.payTo) {
+    why.push(`4: the seller ${locked.data.sellerAddress} is not worker ${workerId}'s address`);
+  }
+  // 5. Bound to the request: recompute the commitment from the request my agent quoted.
+  const requestHash = started ? parametersInputHash(started.data.request) : null;
+  if (locked && requestHash !== locked.data.inputHash) {
+    why.push("5: terms.inputHash is not the commitment to the quoted request");
+  }
+  if (!locked || !started || !completed) return { pass: false, why };
+
+  // 6. Visible: the evidence block (12.3).
+  const l: EscrowLock = locked.data;
+  const block = [
+    `### Masumi evidence: ${scenario}, ${sgt(started.ts)} SGT`,
+    "",
+    "| Field | Value |",
+    "| --- | --- |",
+    `| Run | \`${scenario}\`, run \`${runId}\`, ${sgt(started.ts)} SGT |`,
+    `| Compute | worker ${workerId} (${hardware(worker)}), ${started.data.request.workload}, ${(completed.data.durationMs / 1000).toFixed(1)} s, sha256 \`${completed.data.sha256}\` |`,
+    `| Lock tx | [\`${txHash}\`](${explorerTxUrl(txHash)}) |`,
+    `| Escrow address | \`${l.escrowAddress}\` (Masumi \`vested_pay\` V2, preprod) |`,
+    `| Seller | worker ${workerId}, \`${l.sellerAddress}\` (\`terms.sellerAddress\`) |`,
+    `| Request hash | \`${l.inputHash}\` (\`terms.inputHash\`; recomputed from the quoted request: ${requestHash === l.inputHash ? "match" : "MISMATCH"}) |`,
+    `| Amount and asset | ${formatAtomic(l.amountAtomic)} tUSDM (\`${l.asset}\`) plus ${formatLovelace(l.collateralLovelace)} collateral |`,
+    `| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](${explorerTxUrl(txHash)})); pay by ${deadline(l.payByTime)}, submit result ${deadline(l.submitResultTime)}, unlock ${deadline(l.unlockTime)}, dispute ${deadline(l.externalDisputeUnlockTime)} (SGT) |`,
+    `| Status | ${MASUMI_LOCK_LABEL} |`,
+    "",
+  ].join("\n");
+  return { pass: why.length === 0, why, block };
+}
+
 const workers = (await (await fetch(`${base}/api/workers`)).json()) as WorkerSnapshot[];
 const imageReady = workers.some((w) => w.status !== "offline" && w.warm.includes("image"));
 const scenarios = (values.scenarios?.split(",") as ScenarioName[] | undefined) ?? [
@@ -215,6 +331,19 @@ for (let round = 1; round <= rounds; round++) {
       `  ${row.pass ? "PASS" : "FAIL"} ${row.workerId ?? "-"} ${row.amountAtomic ? formatUsdAtomic(row.amountAtomic) : ""} ${row.txHash ? explorerTxUrl(row.txHash) : ""} ${row.why.join("; ")}`,
     );
   }
+}
+
+let escrow: EscrowCheck | null = null;
+if (values.escrow) {
+  // gpu-image-escrow when worker A serves images; otherwise fractal-escrow on A (PLAN 4.9).
+  const a = workers.find((w) => w.workerId === "A");
+  const scenario: ScenarioName =
+    a && a.status !== "offline" && a.warm.includes("image") ? "gpu-image-escrow" : "fractal-escrow";
+  const runId = await start(scenario);
+  console.log(`escrow ${scenario}: run ${runId}`);
+  escrow = await checkEscrow(scenario, runId, await follow(runId, false), workers);
+  console.log(`  ${escrow.pass ? "PASS" : "FAIL"} ${escrow.why.join("; ")}`);
+  if (escrow.block) console.log(`\n${escrow.block}`);
 }
 
 console.log("\ncancelled payments on chain:");
@@ -258,18 +387,21 @@ console.log(
 
 if (!values["no-runs-md"]) {
   const file = join(root, "docs/RUNS.md");
-  if (!existsSync(file)) {
-    writeFileSync(
-      file,
-      "# Runs\n\nReal runs on Cardano preprod, appended by `scripts/demo-check.sh`.\n\n| Time (SGT) | Scenario | Worker | Price | Tx | Duration | sha256 |\n| --- | --- | --- | --- | --- | --- | --- |\n",
-    );
-  }
-  for (const r of rows.filter((x) => x.pass && x.txHash)) {
-    appendFileSync(
-      file,
-      `| ${sgt(r.at)} | ${r.scenario} | ${r.workerId} | ${formatUsdAtomic(r.amountAtomic ?? "0")} | [${r.txHash?.slice(0, 10)}…](${explorerTxUrl(r.txHash ?? "")}) | ${((r.durationMs ?? 0) / 1000).toFixed(1)} s | \`${r.sha256?.slice(0, 16)}\` |\n`,
-    );
-  }
-  console.log(`appended ${rows.filter((x) => x.pass).length} rows to docs/RUNS.md`);
+  const added = rows.filter((x) => x.pass && x.txHash);
+  const block = escrow?.pass ? escrow.block : undefined;
+  writeFileSync(
+    file,
+    updateRunsMd(
+      existsSync(file) ? readFileSync(file, "utf8") : null,
+      added.map(
+        (r) =>
+          `| ${sgt(r.at)} | ${r.scenario} | ${r.workerId} | ${formatUsdAtomic(r.amountAtomic ?? "0")} | [${r.txHash?.slice(0, 10)}…](${explorerTxUrl(r.txHash ?? "")}) | ${((r.durationMs ?? 0) / 1000).toFixed(1)} s | \`${r.sha256?.slice(0, 16)}\` |`,
+      ),
+      block,
+    ),
+  );
+  console.log(
+    `docs/RUNS.md: ${added.length} rows${block ? ", and the Masumi evidence block" : ""}`,
+  );
 }
-process.exit(fullRounds === rounds && chainOk ? 0 : 1);
+process.exit(fullRounds === rounds && chainOk && (escrow?.pass ?? true) ? 0 : 1);

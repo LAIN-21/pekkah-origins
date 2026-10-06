@@ -6,13 +6,19 @@ import {
   PaymentOperations,
   type ResourceServerOptions,
 } from "@pekkah/payments";
-import { type JobEventInput, MAX_TIMEOUT_SECONDS, NETWORK } from "@pekkah/protocol";
+import {
+  type JobEventInput,
+  MAX_TIMEOUT_SECONDS,
+  NETWORK,
+  type PaymentReceipt,
+} from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
 import { slotToPosixMs } from "@x402/cardano";
 import type { HTTPRequestContext, x402ResourceServer } from "@x402/core/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { smokeSellerFromPath } from "./dev.js";
+import { escrowLock } from "./escrow.js";
 import type { EventBus } from "./events.js";
 import type { JobStore } from "./jobs.js";
 import type { OfferStore } from "./offers.js";
@@ -64,6 +70,48 @@ export function createMarketPayments(
     } as JobEventInput);
   };
 
+  /**
+   * payment.settled, then escrow.locked for a Masumi lock, then receipt.issued. For an escrow
+   * job, settled means the lock transaction landed: the funds are locked in escrow.
+   */
+  const settled = (
+    key: string,
+    txHash: string,
+    receipt: PaymentReceipt,
+    requirements: PaymentRequirements,
+    paymentPayload: PaymentPayload,
+    late: boolean,
+  ) => {
+    const job = stores.jobs.byTxHash(txHash);
+    if (job) job.paid = true;
+    const jobRef = job ? { jobId: job.jobId } : {};
+    emit(key, {
+      type: "payment.settled",
+      ...jobRef,
+      data: {
+        txHash,
+        explorerUrl: receipt.explorerUrl,
+        transferMethod: receipt.transferMethod,
+        ...(late ? { late: true } : {}),
+        ...(receipt.confirmations !== undefined ? { confirmations: receipt.confirmations } : {}),
+      },
+    });
+    if (receipt.transferMethod === "masumi") {
+      try {
+        const result = escrowLock({ txHash, requirements, paymentPayload });
+        if ("lock" in result) emit(key, { type: "escrow.locked", ...jobRef, data: result.lock });
+        else log.error({ txHash, key, reason: result.error }, "escrow lock not reported");
+      } catch (err) {
+        log.error({ txHash, key, err }, "escrow lock not reported");
+      }
+    }
+    emit(key, {
+      type: "receipt.issued",
+      ...jobRef,
+      data: { receipt, resultUrl: job ? `/api/results/${job.jobId}` : "" },
+    });
+  };
+
   // Late settlement (PLAN 4.4): the transaction may still land after settle gave up. Keep the
   // result and ask the facilitator again every 20 s; that resumes watching the same
   // transaction and never broadcasts it again. The market itself never calls Blockfrost.
@@ -96,25 +144,10 @@ export function createMarketPayments(
         if (result.success) {
           watching.delete(txHash);
           operations.recordSettle(txHash, result);
-          const job = stores.jobs.byTxHash(txHash);
-          if (job) job.paid = true;
           const receipt = buildReceipt({ paymentPayload: payload, requirements, settle: result });
-          log.info({ txHash, key }, "payment settled late");
-          emit(key, {
-            type: "payment.settled",
-            ...(job ? { jobId: job.jobId } : {}),
-            data: {
-              txHash,
-              explorerUrl: receipt.explorerUrl,
-              late: true,
-              transferMethod: receipt.transferMethod,
-            },
-          });
-          emit(key, {
-            type: "receipt.issued",
-            ...(job ? { jobId: job.jobId } : {}),
-            data: { receipt, resultUrl: job ? `/api/results/${job.jobId}` : "" },
-          });
+          const what = receipt.transferMethod === "masumi" ? "locked in escrow" : "payment settled";
+          log.info({ txHash, key }, `${what} late`);
+          settled(key, txHash, receipt, requirements, payload, true);
           return;
         }
         if (result.errorReason !== "settlement_pending") {
@@ -138,25 +171,10 @@ export function createMarketPayments(
       log.info({ txHash, key }, "payment settling");
       emit(key, { type: "payment.settling", data: { txHash } });
     },
-    onSettled: ({ txHash, key, receipt }) => {
-      log.info({ txHash, key, explorerUrl: receipt.explorerUrl }, "payment settled");
-      const job = stores.jobs.byTxHash(txHash);
-      if (job) job.paid = true;
-      emit(key, {
-        type: "payment.settled",
-        ...(job ? { jobId: job.jobId } : {}),
-        data: {
-          txHash,
-          explorerUrl: receipt.explorerUrl,
-          transferMethod: receipt.transferMethod,
-          ...(receipt.confirmations !== undefined ? { confirmations: receipt.confirmations } : {}),
-        },
-      });
-      emit(key, {
-        type: "receipt.issued",
-        ...(job ? { jobId: job.jobId } : {}),
-        data: { receipt, resultUrl: job ? `/api/results/${job.jobId}` : "" },
-      });
+    onSettled: ({ txHash, key, receipt, requirements, paymentPayload }) => {
+      const what = receipt.transferMethod === "masumi" ? "locked in escrow" : "payment settled";
+      log.info({ txHash, key, explorerUrl: receipt.explorerUrl }, what);
+      settled(key, txHash, receipt, requirements, paymentPayload, false);
     },
     onSettleFailed: ({ txHash, key, reason, errorReason, paymentPayload, requirements }) => {
       // The result stays with the market; a pending transaction is watched until it lands.

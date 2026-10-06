@@ -14,6 +14,7 @@ import {
   registerSmokeEscrowRoute,
   registerSmokeRoute,
 } from "./dev.js";
+import { escrowCommitment } from "./escrow.js";
 import { EventBus } from "./events.js";
 import { JobStore } from "./jobs.js";
 import { OfferStore } from "./offers.js";
@@ -85,7 +86,8 @@ const payments = createMarketPayments(
   {
     facilitatorUrl: env.FACILITATOR_URL,
     timeoutMs: env.FACILITATOR_TIMEOUT_MS,
-    ...(seller ? { masumi: { seller } } : {}),
+    // One commitment callback for every Masumi route: escrow jobs bind to the quoted request.
+    ...(seller ? { masumi: { seller, commitment: escrowCommitment(offers) } } : {}),
   },
   bus,
   log,
@@ -140,6 +142,10 @@ const app = createApp({
       bus,
       l1Confirmations: env.L1_CONFIRMATIONS,
       log,
+      // POST /api/escrow-jobs/:offerId only with a seller key that derives SELLER_A_ADDRESS.
+      ...(seller
+        ? { masumi: { sellerAddress: seller.sellerAddress, asset: env.PEKKAH_ASSET } }
+        : {}),
     });
     registerReadRoutes(app, { jobs, runs, facilitatorUrl: env.FACILITATOR_URL, log });
     registerAgentEvents(app, bearerGuard(env.AGENT_TOKEN), bus);
