@@ -25,11 +25,11 @@ const REASON_TEXT: Record<RejectionReason, string> = {
 
 export function RequestCard({ run }: { run: RunView }) {
   const r = run.started?.data.request;
-  if (!run.scenario || !r) return null;
+  if (!r) return null;
   return (
     <div className="card">
       <h3>What my agent asked for</h3>
-      <p>{SCENARIOS[run.scenario].summary}</p>
+      {run.scenario && <p>{SCENARIOS[run.scenario].summary}</p>}
       <p className="small muted">{requestLine(r)}</p>
     </div>
   );

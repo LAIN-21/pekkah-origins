@@ -1,4 +1,4 @@
-import type { EventOf, JobEvent, ScenarioName } from "@pekkah/protocol";
+import { type EventOf, type JobEvent, ScenarioName } from "@pekkah/protocol";
 
 // Everything the page shows about a run is derived here from the events the
 // backend emitted, in their order. Nothing is inferred beyond them: a step that
@@ -30,6 +30,7 @@ export type RunStatus = "running" | "completed" | "failed";
 
 export interface RunView {
   runId: string;
+  /** Unset for a free-form run (scenario "custom", from the MCP or the CLI). */
   scenario?: ScenarioName;
   started?: EventOf<"run.started">;
   quotes: EventOf<"quote.issued">[];
@@ -54,6 +55,11 @@ export function byId(a: JobEvent, b: JobEvent): number {
 /** Events that belong to runs (dev test jobs never count as runs). */
 export function runEvents(events: readonly JobEvent[], runId: string): JobEvent[] {
   return events.filter((e) => e.runId === runId && !e.dev).sort(byId);
+}
+
+/** A preset scenario's name, or undefined for anything else, such as a "custom" run. */
+export function knownScenario(name: string): ScenarioName | undefined {
+  return ScenarioName.safeParse(name).data;
 }
 
 /** runIds in the order their runs started (oldest first). */
@@ -113,7 +119,7 @@ export function deriveRun(runId: string, all: readonly JobEvent[]): RunView {
     switch (e.type) {
       case "run.started":
         view.started = e;
-        view.scenario = e.data.scenario;
+        view.scenario = knownScenario(e.data.scenario);
         break;
       case "quote.issued":
         view.quotes.push(e);

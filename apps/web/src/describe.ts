@@ -1,5 +1,6 @@
 import { type JobEvent, MASUMI_LOCK_LABEL, SCENARIOS } from "@pekkah/protocol";
 import { formatAsset, formatMs, formatSeconds, formatUsd, short } from "./format";
+import { knownScenario } from "./run";
 
 export type Tone = "neutral" | "good" | "bad" | "info" | "warn";
 
@@ -25,12 +26,14 @@ export function sourceLabel(e: JobEvent): string {
 /** `name(id)` turns a worker id into the name the market reports, e.g. "Worker A". */
 export function describeEvent(e: JobEvent, name: (workerId: string) => string): EventLine {
   switch (e.type) {
-    case "run.started":
+    case "run.started": {
+      const scenario = knownScenario(e.data.scenario);
       return {
         title: "My agent started a run",
-        detail: SCENARIOS[e.data.scenario].summary,
+        detail: scenario && SCENARIOS[scenario].summary,
         tone: "info",
       };
+    }
     case "quote.issued": {
       const q = e.data.quote;
       const offers = q.offers.length;
