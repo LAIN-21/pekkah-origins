@@ -44,8 +44,9 @@ export function escrowReceipt(accepted: PaymentRequirements, paymentHeader: stri
   };
 }
 
+/** ISO date and time in Singapore, e.g. 2026-10-06 16:43:24 SGT. */
 const sgt = (posixMs: string) =>
-  `${new Intl.DateTimeFormat("en-GB", {
+  `${new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Singapore",
     dateStyle: "short",
     timeStyle: "medium",
