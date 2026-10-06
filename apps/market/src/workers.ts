@@ -162,14 +162,19 @@ export class WorkerRegistry {
         this.o.log.warn({ workerId: entry?.workerId }, "unreadable worker message");
         return;
       }
-      if (!entry) {
-        if (msg.type !== "hello") return this.refuse(socket, "no_hello", "send hello first");
-        clearTimeout(helloTimer);
-        entry = this.onHello(socket, msg);
-        return;
+      // ws does not catch listener errors: one bad message must not take the market down.
+      try {
+        if (!entry) {
+          if (msg.type !== "hello") return this.refuse(socket, "no_hello", "send hello first");
+          clearTimeout(helloTimer);
+          entry = this.onHello(socket, msg);
+          return;
+        }
+        this.touch(entry);
+        this.onMessage(entry, msg);
+      } catch (err) {
+        this.o.log.error({ err, workerId: entry?.workerId }, "worker message handler failed");
       }
-      this.touch(entry);
-      this.onMessage(entry, msg);
     });
 
     socket.on("close", () => {
@@ -193,6 +198,14 @@ export class WorkerRegistry {
       this.refuse(socket, "unauthorized", "unknown worker or bad token");
       return null;
     }
+    let prices: WorkerPrice[];
+    try {
+      prices = hello.prices.map((p) => ({ ...p, atomic: usdToAtomic(p.usd) }));
+    } catch {
+      this.o.log.warn({ workerId: hello.workerId }, "worker refused: price out of range");
+      this.refuse(socket, "invalid_hello", "price out of range");
+      return null;
+    }
     const previous = this.workers.get(hello.workerId);
     if (previous?.socket && previous.socket !== socket) {
       const old = previous.socket;
@@ -206,7 +219,7 @@ export class WorkerRegistry {
       name: hello.name,
       payTo: hello.payTo,
       hardware: hello.hardware,
-      prices: hello.prices.map((p) => ({ ...p, atomic: usdToAtomic(p.usd) })),
+      prices,
       ...(hello.schedule ? { schedule: hello.schedule } : {}),
       version: hello.version,
       socket,

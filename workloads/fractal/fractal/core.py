@@ -50,8 +50,10 @@ VIEWS: dict[str, View] = {
     "hd-heavy": View("0.2850", "0.0100", "0.0200"),
 }
 
-# Calibration challenge views: different regions, so a worker cannot reuse one answer. Each
-# is 100M to 320M iterations, so the timed work dwarfs the container's fixed overhead.
+# Calibration challenge views: different regions, so one cached answer passes only one of
+# them. They are public, so a dishonest worker could still precompute all 8: the answer check
+# catches faulty workers, not cheating ones (PLAN 6.5). Each is 100M to 320M iterations, so
+# the timed work dwarfs the container's fixed overhead.
 CHALLENGES: list[View] = [
     View("-0.745", "0.113", "0.012"),
     View("0.285", "0.011", "0.020"),

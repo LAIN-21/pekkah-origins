@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { FRACTAL_PRESETS, FRACTAL_SOURCE_SHA256, FractalParams } from "@pekkah/protocol";
+import { createLogger } from "@pekkah/runtime";
 import { describe, expect, it } from "vitest";
-import { fractalDockerArgs } from "./workloads/fractal.js";
+import { smiNumber } from "./hardware.js";
+import { createFractalWorkload, fractalDockerArgs } from "./workloads/fractal.js";
 
 const core = new URL("../../../workloads/fractal/fractal/core.py", import.meta.url);
 
@@ -49,6 +51,41 @@ describe("fractal job container", () => {
     const cfg = { image: "x", cpus: 1, memory: "1g", dataDir: "/d" };
     expect(() => fractalDockerArgs("../etc", params, cfg)).toThrow();
     expect(() => fractalDockerArgs("a b", params, cfg)).toThrow();
+  });
+});
+
+describe("fractal workload", () => {
+  it("never starts a container for a job canceled before it began", async () => {
+    const workload = createFractalWorkload({
+      image: "pekkah/fractal:missing",
+      cpus: 1,
+      memory: "1g",
+      dataDir: "/nonexistent/pekkah",
+    });
+    const abort = new AbortController();
+    abort.abort("market connection lost");
+    await expect(
+      workload.run({
+        jobId: "01JOB",
+        kind: "dev",
+        params: FractalParams.parse({ preset: "tiny" }),
+        deadlineSec: 30,
+        signal: abort.signal,
+        progress: () => {},
+        log: createLogger("fractal-test"),
+      }),
+    ).rejects.toThrow("canceled before start: market connection lost");
+  });
+});
+
+describe("nvidia-smi fields", () => {
+  it("reads numbers and drops [N/A] and [Not Supported]", () => {
+    expect(smiNumber("20475")).toBe(20475);
+    expect(smiNumber(" 37 ")).toBe(37);
+    expect(smiNumber("[N/A]")).toBeUndefined();
+    expect(smiNumber("[Not Supported]")).toBeUndefined();
+    expect(smiNumber("")).toBeUndefined();
+    expect(smiNumber(undefined)).toBeUndefined();
   });
 });
 

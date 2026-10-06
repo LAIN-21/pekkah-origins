@@ -27,4 +27,4 @@ export const PRESET_ITERS = {
 
 /** sha256 of workloads/fractal/fractal/core.py when these were generated. */
 export const FRACTAL_SOURCE_SHA256 =
-  "5626c6d0d300f75701ad60894a859fe6c2bce69e7b028b682fa9cb500a6de038";
+  "2f7a1b6a5b4a5263c5652c0f2b3971188c6aaef914efb795d5d8cf3f742538ff";

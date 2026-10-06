@@ -38,7 +38,7 @@ async function market(silentMs = 15_000) {
   return { registry, bus, url, calibrations };
 }
 
-async function worker(url: string, token = TOKEN) {
+async function worker(url: string, token = TOKEN, hello: Record<string, unknown> = {}) {
   const ws = new WebSocket(url);
   const inbox: MarketToWorker[] = [];
   const waiters: (() => void)[] = [];
@@ -66,6 +66,7 @@ async function worker(url: string, token = TOKEN) {
     hardware: { cpuModel: "test", vcpus: 8, memGb: 16 },
     prices: [{ workload: "fractal", usd: 0.03 }],
     warm: ["fractal"],
+    ...hello,
   });
   return { ws, next, send };
 }
@@ -78,6 +79,16 @@ describe("worker registry", () => {
     expect(error).toMatchObject({ type: "error", code: "unauthorized" });
     await new Promise((resolve) => w.ws.once("close", resolve));
     expect(registry.snapshots()).toEqual([]);
+  });
+
+  it("refuses a hello whose price cannot be converted, and keeps serving", async () => {
+    const { url, registry } = await market();
+    const bad = await worker(url, TOKEN, { prices: [{ workload: "fractal", usd: 1e300 }] });
+    expect(await bad.next("error")).toMatchObject({ type: "error", code: "invalid_hello" });
+    await new Promise((resolve) => bad.ws.once("close", resolve));
+    expect(registry.snapshots()).toEqual([]);
+    const good = await worker(url);
+    expect(await good.next("welcome")).toMatchObject({ workerId: "B" });
   });
 
   it("welcomes a worker, asks for calibration, and reports it in /api/workers", async () => {

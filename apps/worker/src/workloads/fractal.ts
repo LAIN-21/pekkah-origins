@@ -102,10 +102,18 @@ export function createFractalWorkload(cfg: FractalConfig): Workload<FractalParam
     },
 
     async run(ctx: JobContext<FractalParamsType>): Promise<JobOutput> {
+      // The abort listener below misses a cancel that came before it was added.
+      const canceled = () => {
+        if (ctx.signal.aborted) {
+          throw new Error(`canceled before start: ${String(ctx.signal.reason ?? "canceled")}`);
+        }
+      };
+      canceled();
       const dir = join(cfg.dataDir, "jobs", ctx.jobId);
       const name = `pekkah-job-${ctx.jobId}`;
       await prepareJobDir(dir);
       try {
+        canceled();
         const child = spawn("docker", fractalDockerArgs(ctx.jobId, ctx.params, cfg), {
           stdio: ["ignore", "pipe", "pipe"],
         });

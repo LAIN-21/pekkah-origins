@@ -6,6 +6,13 @@ import type { GpuInfo, WorkerHardware, WorkerUtil } from "@pekkah/protocol";
 const run = promisify(execFile);
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+/** An nvidia-smi field as a number; `[N/A]` and `[Not Supported]` give undefined, never NaN. */
+export function smiNumber(field: string | undefined): number | undefined {
+  if (field === undefined || field.trim() === "") return undefined;
+  const n = Number(field);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 async function nvidiaSmi(query: string): Promise<string[] | null> {
   try {
     const { stdout } = await run(
@@ -25,9 +32,10 @@ async function nvidiaSmi(query: string): Promise<string[] | null> {
 export async function detectGpu(): Promise<GpuInfo | undefined> {
   const row = await nvidiaSmi("name,memory.total,driver_version");
   if (!row) return undefined;
-  const [name, memMiB, driver] = row;
-  if (!name || !memMiB) return undefined;
-  return { name, vramGb: round1(Number(memMiB) / 1024), driver: driver ?? "" };
+  const [name, memField, driver] = row;
+  const memMiB = smiNumber(memField);
+  if (!name || memMiB === undefined || memMiB <= 0) return undefined;
+  return { name, vramGb: round1(memMiB / 1024), driver: driver ?? "" };
 }
 
 /** Measured, not declared: the hardware a buyer's GPU and VRAM constraints are checked against. */
@@ -64,10 +72,10 @@ export function utilSampler(hasGpu: boolean): () => Promise<WorkerUtil> {
     const util: WorkerUtil = { cpuPct: Math.min(100, Math.max(0, cpuPct)) };
     if (hasGpu) {
       const row = await nvidiaSmi("utilization.gpu,memory.used");
-      if (row?.[0] && row[1]) {
-        util.gpuPct = Math.min(100, Math.max(0, Number(row[0])));
-        util.vramUsedGb = round1(Number(row[1]) / 1024);
-      }
+      const gpuPct = smiNumber(row?.[0]);
+      const usedMiB = smiNumber(row?.[1]);
+      if (gpuPct !== undefined) util.gpuPct = Math.min(100, Math.max(0, gpuPct));
+      if (usedMiB !== undefined) util.vramUsedGb = round1(Math.max(0, usedMiB) / 1024);
     }
     return util;
   };

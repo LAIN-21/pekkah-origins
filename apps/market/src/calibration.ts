@@ -42,6 +42,8 @@ export function createCalibrator(bus: EventBus, log: Logger) {
         if (!timed.ok) throw new Error(`challenge job failed: ${timed.error}`);
         const overheadSec = round3(overhead.durationMs / 1000);
         const calibSec = round3(timed.durationMs / 1000);
+        // Catches a faulty worker, not a cheating one: the 8 challenges are public, so a
+        // worker could replay stored answers (PLAN 6.5). Only allowlisted tokens join.
         const expected = CALIB_SHA256[challenge];
         const iterations = CALIB_ITERS[challenge] ?? 0;
         const verified = expected !== undefined && timed.sha256 === expected && iterations > 0;
