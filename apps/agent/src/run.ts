@@ -1,18 +1,22 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Buyer } from "@pekkah/buyer";
+import type { Buyer, PaymentExpectation } from "@pekkah/buyer";
 import {
   type CounterOffer,
   explorerTxUrl,
   formatUsdAtomic,
   JobResultBody,
+  NETWORK,
   type Offer,
   RUN_ID_HEADER,
   SCENARIOS,
   type ScenarioName,
   scenarioRequest,
 } from "@pekkah/protocol";
+import { masumiEscrowAddress } from "@x402/cardano";
+import type { PaymentRequirements } from "@x402/core/types";
 import { decide, PRIVATE_CEILINGS_USD } from "./decide.js";
+import { type EscrowReceipt, escrowLines, escrowReceipt } from "./escrow.js";
 import type { MarketClient } from "./market.js";
 
 export interface RunOptions {
@@ -34,6 +38,8 @@ export interface RunOutcome {
   jobId?: string;
   workerId?: string;
   txHash?: string;
+  /** Escrow runs: what was locked in Masumi escrow. */
+  escrow?: EscrowReceipt;
   totalMs: number;
 }
 
@@ -78,10 +84,16 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
   if (balance) await o.market.event("agent.balance", balance, ids);
 
   // Failover (PLAN 6.4): a failed job costs nothing; re-quote without that worker, once.
+  // Escrow runs never reroute: only worker A sells through escrow.
   const excluded: string[] = [...(request.constraints.exclude ?? [])];
   const route = SCENARIOS[o.scenario].route;
-  if (route !== "jobs") return fail(`the ${route} route arrives in PR-10`);
-  let paid: { offer: Offer | CounterOffer; job: JobResultBody } | null = null;
+  const escrow = route === "escrow-jobs";
+  let paid: {
+    offer: Offer | CounterOffer;
+    job: JobResultBody;
+    accepted?: PaymentRequirements;
+    paymentHeader?: string;
+  } | null = null;
   let failedOver = false;
   for (let attempt = 1; !paid; attempt += 1) {
     const attemptRequest = excluded.length
@@ -102,11 +114,23 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
     const offer = decision.chosen;
     if (decision.kind === "declined" || !offer) return fail(decision.reasons.join(" "));
 
-    const url = `${o.market.url}/api/jobs/${offer.offerId}`;
+    const url = `${o.market.url}/api/${route}/${offer.offerId}`;
+    // The 402 must ask for exactly what I accepted (PLAN 4.7). For escrow: locked at the escrow
+    // address, the offer's worker as seller, bound to the request I just quoted.
+    const expect: PaymentExpectation = escrow
+      ? {
+          transferMethod: "masumi",
+          payTo: masumiEscrowAddress(NETWORK),
+          seller: offer.payTo,
+          parameters: attemptRequest,
+          amountAtomic: offer.priceAtomic,
+          asset: offer.asset,
+        }
+      : { payTo: offer.payTo, amountAtomic: offer.priceAtomic, asset: offer.asset };
     const result = await o.buyer.buy({
       url,
       headers: { [RUN_ID_HEADER]: o.runId },
-      expect: { payTo: offer.payTo, amountAtomic: offer.priceAtomic, asset: offer.asset },
+      expect,
       runId: o.runId,
       offerId: offer.offerId,
     });
@@ -127,10 +151,15 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
 
     const body = JobResultBody.safeParse(result.body);
     if (result.status === 200 && result.settle?.success && body.success) {
-      paid = { offer, job: body.data };
+      paid = {
+        offer,
+        job: body.data,
+        ...(result.accepted ? { accepted: result.accepted } : {}),
+        ...(result.paymentHeader ? { paymentHeader: result.paymentHeader } : {}),
+      };
       break;
     }
-    if (result.status === 502 && !failedOver && attempt < MAX_ATTEMPTS) {
+    if (result.status === 502 && !failedOver && !escrow && attempt < MAX_ATTEMPTS) {
       failedOver = true;
       excluded.push(offer.workerId);
       const reason = `${offer.workerId}'s job failed and its payment was cancelled: nothing was charged. Re-quoting without ${offer.workerId}.`;
@@ -150,16 +179,25 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
       result.status === 502
         ? `the job failed on ${offer.workerId}; the payment was cancelled and nothing was charged`
         : result.status === 402 && result.txHash
-          ? "the payment did not settle"
+          ? escrow
+            ? "the escrow lock did not land"
+            : "the payment did not settle"
           : `the market answered ${result.status}`;
     return fail(reason, { ...(result.txHash ? { txHash: result.txHash } : {}) });
   }
 
   const { offer } = paid;
   const job = paid.job;
-  o.print(
-    `paid       ${formatUsdAtomic(offer.priceAtomic)} tUSDM to ${offer.workerId} (${offer.payTo})`,
-  );
+  let locked: EscrowReceipt | undefined;
+  if (escrow) {
+    if (!paid.accepted || !paid.paymentHeader) return fail("no escrow terms for the lock");
+    locked = escrowReceipt(paid.accepted, paid.paymentHeader);
+    for (const line of escrowLines(locked, offer.workerId)) o.print(line);
+  } else {
+    o.print(
+      `paid       ${formatUsdAtomic(offer.priceAtomic)} tUSDM to ${offer.workerId} (${offer.payTo})`,
+    );
+  }
   o.print(`tx         ${explorerTxUrl(job.txHash)}`);
   o.print(
     `job        ${job.jobId} on ${job.workerId}: ${(job.durationMs / 1000).toFixed(1)} s, sha256 ${job.sha256}`,
@@ -187,5 +225,12 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
     { ...ids, jobId: job.jobId },
   );
   o.print(`done       in ${(totalMs / 1000).toFixed(1)} s`);
-  return { ok: true, jobId: job.jobId, workerId: job.workerId, txHash: job.txHash, totalMs };
+  return {
+    ok: true,
+    jobId: job.jobId,
+    workerId: job.workerId,
+    txHash: job.txHash,
+    ...(locked ? { escrow: locked } : {}),
+    totalMs,
+  };
 }

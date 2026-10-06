@@ -1,6 +1,11 @@
 import { MAX_TIMEOUT_SECONDS, NETWORK, type PaymentReceipt } from "@pekkah/protocol";
 import { assertMnemonic } from "@pekkah/runtime";
-import { masumiEscrowAddress, toMasumiSellerSigner } from "@x402/cardano";
+import {
+  commitmentPartDigest,
+  computeInputHash,
+  masumiEscrowAddress,
+  toMasumiSellerSigner,
+} from "@x402/cardano";
 import {
   assertMasumiTemplate,
   ExactCardanoScheme,
@@ -45,6 +50,20 @@ export interface MasumiCommitmentPart {
   canonicalization: "jcs" | "raw";
   mediaType?: string;
   content: unknown;
+}
+
+/**
+ * The Masumi input hash of a commitment to `request` alone, as one `parameters` part (PLAN
+ * 4.8): what an escrow-job's `terms.inputHash` must be for the request the agent quoted.
+ */
+export function parametersInputHash(request: unknown): string {
+  const part = { name: "parameters", canonicalization: "jcs" as const };
+  return computeInputHash({
+    version: "1",
+    algorithm: "sha256",
+    parts: [{ ...part, digest: commitmentPartDigest({ ...part, content: request }) }],
+    digest: "",
+  });
 }
 
 export function createResourceServer(options: ResourceServerOptions): x402ResourceServer {
@@ -186,7 +205,11 @@ export interface PaymentHookHandlers {
   keyOf(request: HTTPRequestContext | undefined, txHash: string): string | null;
   onSettling?(info: PaymentHookInfo): void | Promise<void>;
   onSettled?(
-    info: PaymentHookInfo & { settle: SettleResponse; receipt: PaymentReceipt },
+    info: PaymentHookInfo & {
+      settle: SettleResponse;
+      receipt: PaymentReceipt;
+      paymentPayload: PaymentPayload;
+    },
   ): void | Promise<void>;
   /**
    * `errorReason` is the facilitator's code; `settlement_pending` means the transaction may
@@ -295,6 +318,7 @@ export function attachPaymentHooks(
         requirements,
         settle,
         receipt,
+        paymentPayload: clone(ctx.paymentPayload),
       });
     });
   });
