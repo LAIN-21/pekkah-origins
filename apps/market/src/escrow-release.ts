@@ -159,9 +159,8 @@ export async function buildRelease(
     .addSigner({ keyHash: KeyHash.fromHex(seller.payment.hash) })
     .setValidity({ from, to: BigInt(o.now() + VALID_FOR_MS) })
     .build({
-      // Exactly the reserve's lovelace: the SDK takes the largest pure-ADA UTxO first, so the
-      // collateral is the reserve alone and needs no return output.
-      setCollateral: Assets.lovelaceOf(reserve.utxo.assets),
+      // At most 5 tADA of the reserve; the SDK returns the rest (collateralReserve).
+      setCollateral: reserve.collateral,
       coinSelection: (available, required) =>
         largestFirstSelection(available.filter(reserve.isNot), required),
     });
