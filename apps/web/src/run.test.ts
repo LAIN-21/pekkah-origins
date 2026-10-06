@@ -1,7 +1,16 @@
 import { JobEvent } from "@pekkah/protocol";
 import { describe, expect, it } from "vitest";
 import { fixtureRunLog } from "./dev/fixture";
-import { deriveRun, isEscrow, latestBalance, runIds, stepStates } from "./run";
+import { deriveRun, isEscrow, knownScenario, latestBalance, runIds, stepStates } from "./run";
+
+/** PR-13 lets run.started carry scenario "custom". The cast keeps this compiling before and after. */
+function asCustomRun(events: JobEvent[]): JobEvent[] {
+  return events.map((e) =>
+    e.type === "run.started"
+      ? ({ ...e, data: { ...e.data, scenario: "custom" } } as unknown as JobEvent)
+      : e,
+  );
+}
 
 describe("deriveRun", () => {
   it("follows a paid gpu-image run from 402 to receipt", () => {
@@ -79,5 +88,22 @@ describe("deriveRun", () => {
     const b = fixtureRunLog("gpu-image", 5);
     const balance = latestBalance([...a.events, ...b.events]);
     expect(balance?.runId).toBe(b.runId);
+  });
+
+  it("follows a custom run: no preset scenario, the request it sent", () => {
+    const log = fixtureRunLog("gpu-image");
+    const run = deriveRun(log.runId, asCustomRun(log.events));
+    expect(run.scenario).toBeUndefined();
+    expect(run.started?.data.request.workload).toBe("image");
+    expect(run.status).toBe("completed");
+    expect(run.attempts[0]?.receipt).toBeDefined();
+  });
+});
+
+describe("knownScenario", () => {
+  it("names preset scenarios only", () => {
+    expect(knownScenario("gpu-image-escrow")).toBe("gpu-image-escrow");
+    expect(knownScenario("custom")).toBeUndefined();
+    expect(knownScenario("constructor")).toBeUndefined();
   });
 });
