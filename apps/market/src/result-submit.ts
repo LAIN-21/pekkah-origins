@@ -108,7 +108,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Seller A's wallet over the facilitator's passthrough. A wallet error can name words, so its
  * message never leaves here. */
-function sellerClient(o: ResultSubmitterOptions) {
+export function sellerClient(o: { chainUrl: string; sellerMnemonic: string }) {
   try {
     return Client.make(preprod)
       .withBlockfrost({ baseUrl: o.chainUrl })
@@ -116,6 +116,33 @@ function sellerClient(o: ResultSubmitterOptions) {
   } catch {
     throw new Error("could not create the Seller A wallet");
   }
+}
+
+export type SellerClient = ReturnType<typeof sellerClient>;
+
+const sameRef = (a: UTxO.UTxO, b: UTxO.UTxO) =>
+  TransactionHash.toHex(a.transactionId) === TransactionHash.toHex(b.transactionId) &&
+  a.index === b.index;
+
+/**
+ * The collateral reserve: the largest pure-ADA wallet UTxO, which must hold at least 2 tADA.
+ * Fees and min-ADA come from the other UTxOs (`isNot` filters it out of coin selection), so the
+ * reserve survives for the next script transaction.
+ */
+export function collateralReserve(
+  wallet: readonly UTxO.UTxO[],
+): { ok: true; utxo: UTxO.UTxO; isNot: (u: UTxO.UTxO) => boolean } | { ok: false; reason: string } {
+  const pure = wallet
+    .filter((u) => !Assets.hasMultiAsset(u.assets) && u.scriptRef === undefined)
+    .sort((a, b) => Number(Assets.lovelaceOf(b.assets) - Assets.lovelaceOf(a.assets)));
+  const reserve = pure[0];
+  if (!reserve || Assets.lovelaceOf(reserve.assets) < MIN_COLLATERAL) {
+    return {
+      ok: false,
+      reason: "Seller A needs a pure-ADA UTxO of at least 2 tADA for collateral",
+    };
+  }
+  return { ok: true, utxo: reserve, isNot: (u) => !sameRef(u, reserve) };
 }
 
 /**
@@ -184,22 +211,8 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
       return { ok: false, reason: "the submit-result window has closed" };
     }
     const datum = submittedDatum(locked, input.resultHash, to + cooldownMs + 1_000n);
-    // Reserve the largest pure-ADA UTxO as collateral and pay the fee from the others, so the
-    // reserve survives for the next submit.
-    const wallet = await client.getWalletUtxos();
-    const pure = wallet
-      .filter((u) => !Assets.hasMultiAsset(u.assets) && u.scriptRef === undefined)
-      .sort((a, b) => Number(Assets.lovelaceOf(b.assets) - Assets.lovelaceOf(a.assets)));
-    const reserve = pure[0];
-    if (!reserve || Assets.lovelaceOf(reserve.assets) < MIN_COLLATERAL) {
-      return {
-        ok: false,
-        reason: "Seller A needs a pure-ADA UTxO of at least 2 tADA for collateral",
-      };
-    }
-    const isReserve = (u: UTxO.UTxO) =>
-      TransactionHash.toHex(u.transactionId) === TransactionHash.toHex(reserve.transactionId) &&
-      u.index === reserve.index;
+    const reserve = collateralReserve(await client.getWalletUtxos());
+    if (!reserve.ok) return reserve;
     const built = await client
       .newTx()
       .collectFrom({ inputs: [utxo], redeemer: Data.constr(SUBMIT_RESULT, []) })
@@ -216,12 +229,9 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
         passAdditionalUtxos: input.dryRunUtxo !== undefined,
         // Exactly the reserve's lovelace: the SDK takes the largest pure-ADA UTxO first, so the
         // collateral is the reserve alone and needs no return output.
-        setCollateral: Assets.lovelaceOf(reserve.assets),
+        setCollateral: Assets.lovelaceOf(reserve.utxo.assets),
         coinSelection: (available, required) =>
-          largestFirstSelection(
-            available.filter((u) => !isReserve(u)),
-            required,
-          ),
+          largestFirstSelection(available.filter(reserve.isNot), required),
       });
     const tx = await built.toTransaction();
     const feeLovelace = tx.body.fee.toString();
