@@ -28,6 +28,10 @@ Real runs on Cardano preprod, appended by `scripts/demo-check.sh`.
 | 2026-10-06 22:22:26 | cpu-counter | C | $0.02 | [5910c7cf9d…](https://preprod.cardanoscan.io/transaction/5910c7cf9d3f2ee4d676c380e24ab86a2259d7323c8b48447b757d719851db4d) | 12.9 s | `ae78f05dee7b858b6323d525e35a61ab238a1c867c26e207df14e3ae9a24fb48` |
 | 2026-10-06 22:23:14 | cpu-tight | B | $0.03 | [1272f7e9a6…](https://preprod.cardanoscan.io/transaction/1272f7e9a6e08979e717a726ccc58bd60ec3ef867224f863659963798617e713) | 8.1 s | `b1b128e34e96600f3cb054237abc6a2805e5648817f326d77146b0ae3d0ee942` |
 | 2026-10-06 22:23:57 | failover | B | $0.03 | [fad1f9a537…](https://preprod.cardanoscan.io/transaction/fad1f9a537232d85ca39f9dd0af6ec81fd2b87a0db1f093e70c631e1e2b1e9ab) | 8.3 s | `c1a15015c207fab78a7c2c9b6502680ef3aae7e672d0e368f0ea391048d735e7` |
+| 2026-10-06 22:46:21 | gpu-image | A | $0.05 | [01150c5b54…](https://preprod.cardanoscan.io/transaction/01150c5b545532748aef227564a1e769e75cabd95818399360d7d909117af19c) | 7.0 s | `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| 2026-10-06 22:46:45 | cpu-counter | C | $0.02 | [087b25bef3…](https://preprod.cardanoscan.io/transaction/087b25bef3cd818d3d3afa4210541ef73f6d336e3ed139bb23142837b4932e6c) | 13.8 s | `ae78f05dee7b858b6323d525e35a61ab238a1c867c26e207df14e3ae9a24fb48` |
+| 2026-10-06 22:47:34 | cpu-tight | B | $0.03 | [c5509305c2…](https://preprod.cardanoscan.io/transaction/c5509305c23b3457b9a65c7c132ea8c2f8792a0d8545efa5486a18aa814a5808) | 8.0 s | `b1b128e34e96600f3cb054237abc6a2805e5648817f326d77146b0ae3d0ee942` |
+| 2026-10-06 22:48:44 | failover | B | $0.03 | [c5c85fec59…](https://preprod.cardanoscan.io/transaction/c5c85fec59e1b1fb17fb1295801cabc9f800d4a147a4f2d23cdc95c68c50844a) | 8.4 s | `c1a15015c207fab78a7c2c9b6502680ef3aae7e672d0e368f0ea391048d735e7` |
 
 <!-- masumi-evidence -->
 ## Masumi evidence
@@ -62,4 +66,20 @@ Written by `scripts/demo-check.sh --escrow` from the run's events (PLAN 12.3).
 | Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/ae0a2d862c7b62a8cf4965bd8e24aa9be1108464ee37e06110b079a37b517099)); pay by 2026-10-06 18:34:58, submit result 2026-10-06 18:49:58, unlock 2026-10-06 19:09:58, dispute 2026-10-06 19:29:58 (SGT) |
 | Result submitted | [`e949491a5e07cf65236244e7c8381c3871c87957539e0e8dd3f645e56661baca`](https://preprod.cardanoscan.io/transaction/e949491a5e07cf65236244e7c8381c3871c87957539e0e8dd3f645e56661baca): Masumi SubmitResult as the seller. The escrow datum now holds the result hash `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` (the delivered result's sha256) and the state ResultSubmitted; the funds stay locked |
 | Status | Locked in Masumi escrow. Release, refund and dispute tooling is my next step. |
+
+### Masumi evidence: gpu-image-escrow, 2026-10-06 22:49:48 SGT
+
+| Field | Value |
+| --- | --- |
+| Run | `gpu-image-escrow`, run `01M48V2DCER28KCA4Z59PQ3VJ0`, 2026-10-06 22:49:48 SGT |
+| Compute | worker A (NVIDIA RTX 4000 Ada Generation 20 GB, 8 vCPU INTEL(R) XEON(R) GOLD 6548Y+, 31.3 GB RAM), image, 6.9 s, sha256 `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| Lock tx | [`2449cbfec113d568211ebf49c5931c80dd0975bc4934c81ff47cecf36f7d29b5`](https://preprod.cardanoscan.io/transaction/2449cbfec113d568211ebf49c5931c80dd0975bc4934c81ff47cecf36f7d29b5) |
+| Escrow address | `addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g` (Masumi `vested_pay` V2, preprod) |
+| Seller | worker A, `addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga` (`terms.sellerAddress`) |
+| Request hash | `3632e82ae498d157e871540f424e8aa11803d41e0d59067fe6621e64b5c2811f` (`terms.inputHash`; recomputed from the quoted request: match) |
+| Amount and asset | 0.05 tUSDM (`e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`) plus 4.00399 tADA collateral |
+| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/2449cbfec113d568211ebf49c5931c80dd0975bc4934c81ff47cecf36f7d29b5)); pay by 2026-10-06 22:59:57, submit result 2026-10-06 23:05:57, unlock 2026-10-06 23:21:27, dispute 2026-10-06 23:36:57 (SGT) |
+| Result submitted | [`a137eb54111ec643d04b790bf6d73d12be666f3b455d79b8dad8d9558ffd09d1`](https://preprod.cardanoscan.io/transaction/a137eb54111ec643d04b790bf6d73d12be666f3b455d79b8dad8d9558ffd09d1): Masumi SubmitResult as the seller. The escrow datum now holds the result hash `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` (the delivered result's sha256) and the state ResultSubmitted; the funds stay locked |
+| Released | [`055488e542c1e61e5eb1e92a460a77c3da5cdf6926eb9d6afa4c95de4a507eed`](https://preprod.cardanoscan.io/transaction/055488e542c1e61e5eb1e92a460a77c3da5cdf6926eb9d6afa4c95de4a507eed): Masumi Withdraw as the seller after the unlock, 2026-10-06 23:23:55 SGT: 0.05 tUSDM to worker A (`addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga`), and the 4.00399 tADA collateral back to the buyer (`addr_test1qptcvmw5j9awp37a2a6ant3fx33a8zex7rvmkyg0823n6t6gsxx6cymneachcxvmu6awzjj8t6yndnkmy86u3mmwjy4qv86get`) |
+| Status | Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back. |
 
