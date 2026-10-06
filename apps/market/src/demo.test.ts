@@ -11,6 +11,8 @@ let agentUrl = "";
 let server: Server;
 const received: { auth?: string; body: unknown }[] = [];
 let agentStatus = 202;
+/** Runs before the stand-in answers, as if the run's outcome raced the agent's 202. */
+let beforeReply: ((body: { runId: string }) => void) | null = null;
 
 beforeAll(async () => {
   // A stand-in for the agent service: records each run it is handed.
@@ -20,7 +22,9 @@ beforeAll(async () => {
       raw += d;
     });
     req.on("end", () => {
-      received.push({ auth: req.headers.authorization, body: JSON.parse(raw || "{}") });
+      const body = JSON.parse(raw || "{}");
+      received.push({ auth: req.headers.authorization, body });
+      beforeReply?.(body);
       res.writeHead(agentStatus, { "content-type": "application/json" }).end("{}");
     });
   });
@@ -52,7 +56,7 @@ function controller(now: { t: number }, dailyRuns = 40) {
       runId,
       data: { jobId: "J", workerId: "B", txHash: "a".repeat(64), totalMs: 1 },
     });
-  return { demo, end, changes: () => changes };
+  return { demo, bus, end, changes: () => changes };
 }
 
 describe("the run button", () => {
@@ -114,5 +118,29 @@ describe("the run button", () => {
     });
     agentStatus = 202;
     expect(demo.state()).toMatchObject({ running: false, runsLeftToday: 40 });
+  });
+
+  it("ends a run whose outcome arrives before the agent's 202", async () => {
+    const now = { t: Date.parse("2026-10-07T05:00:00Z") };
+    const { demo, bus } = controller(now);
+    beforeReply = ({ runId }) =>
+      void bus.emit({ source: "agent", type: "run.failed", runId, data: { reason: "declined" } });
+    const r = await demo.start({ scenario: "cpu-counter" }, false);
+    beforeReply = null;
+    expect(r.status).toBe(202);
+    expect(demo.state()).toMatchObject({ running: false, runsLeftToday: 39 });
+    expect(demo.state().cooldownUntil).not.toBeNull();
+  });
+
+  it("answers a second click at the same moment with 409, without a second submission", async () => {
+    const now = { t: Date.parse("2026-10-07T06:00:00Z") };
+    const { demo } = controller(now);
+    const sent = received.length;
+    const results = await Promise.all([
+      demo.start({ scenario: "cpu-tight" }, false),
+      demo.start({ scenario: "cpu-tight" }, false),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([202, 409]);
+    expect(received.length - sent).toBe(1);
   });
 });

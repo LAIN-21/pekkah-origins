@@ -49,8 +49,8 @@ export class DemoController {
   constructor(private readonly o: DemoOptions) {
     this.now = o.now ?? Date.now;
     o.bus.subscribe((event) => {
-      if (!this.running || event.runId !== this.running.runId) return;
-      if (event.type === "run.completed" || event.type === "run.failed") this.finish();
+      if (!event.runId || event.runId !== this.running?.runId) return;
+      if (event.type === "run.completed" || event.type === "run.failed") this.finish(event.runId);
     });
   }
 
@@ -91,6 +91,14 @@ export class DemoController {
     }
 
     const runId = nextRunId();
+    // Registered before the agent hears of it: a second click meanwhile gets 409, and a run
+    // whose outcome arrives before the agent's 202 (say, a quick decline) still ends it.
+    const timer = setTimeout(() => this.finish(runId), RUN_TIMEOUT_MS);
+    this.running = { runId, scenario: request.scenario, timer };
+    const rollback = () => {
+      clearTimeout(timer);
+      if (this.running?.runId === runId) this.running = null;
+    };
     try {
       const res = await fetch(`${this.o.agentUrl.replace(/\/+$/, "")}/run`, {
         method: "POST",
@@ -107,6 +115,7 @@ export class DemoController {
       });
       if (res.status !== 202) {
         this.o.log.warn({ status: res.status }, "the agent service refused a run");
+        rollback();
         return { status: 502, body: { error: "agent_unavailable" } };
       }
     } catch (err) {
@@ -114,6 +123,7 @@ export class DemoController {
         { err: err instanceof Error ? err.message : err },
         "agent service unreachable",
       );
+      rollback();
       return { status: 502, body: { error: "agent_unavailable" } };
     }
 
@@ -121,20 +131,15 @@ export class DemoController {
       this.runsLeft();
       this.publicRuns += 1;
     }
-    this.running = {
-      runId,
-      scenario: request.scenario,
-      timer: setTimeout(() => this.finish(), RUN_TIMEOUT_MS),
-    };
     this.o.log.info({ runId, scenario: request.scenario, privileged }, "demo run started");
     this.o.onChange();
     return { status: 202, body: { runId, scenario: request.scenario } };
   }
 
-  private finish(): void {
-    if (!this.running) return;
+  private finish(runId: string): void {
+    if (this.running?.runId !== runId) return;
     clearTimeout(this.running.timer);
-    this.o.log.info({ runId: this.running.runId }, "demo run ended");
+    this.o.log.info({ runId }, "demo run ended");
     this.running = null;
     this.cooldownUntil = this.now() + this.o.cooldownSec * 1000;
     this.o.onChange();
