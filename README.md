@@ -79,11 +79,34 @@ With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow 
 
 Every run is a real transaction on Cardano preprod. `scripts/demo-check.sh` appends each passing run to [docs/RUNS.md](docs/RUNS.md).
 
-<!-- PR-11: copy the passing rows from docs/RUNS.md here (real runs only). -->
+`scripts/demo-check.sh --runs 5` passed 5 rounds out of 5: 20 real runs, each with a real mid-job kill in its failover round. Here is the last round. All 20 are in [docs/RUNS.md](docs/RUNS.md).
+
+| Time (SGT) | Scenario | Worker | Price | Tx | Duration | sha256 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 06/10/2026, 16:28:01 | gpu-image | A | $0.05 | [fc9d142c9d…](https://preprod.cardanoscan.io/transaction/fc9d142c9d9e90e84110cac006bf63d1fe5896ebc40fca433c5051372aaa6a5f) | 6.9 s | `454524db2dee1298` |
+| 06/10/2026, 16:28:52 | cpu-counter | C | $0.02 | [78aea2f607…](https://preprod.cardanoscan.io/transaction/78aea2f607277092254bff50ff26b26678afa1418d27b804934cf874ebacd347) | 13.2 s | `ae78f05dee7b858b` |
+| 06/10/2026, 16:29:29 | cpu-tight | B | $0.03 | [5697bd99fb…](https://preprod.cardanoscan.io/transaction/5697bd99fb74e24a009f02cccb2f3d7da43c5627750f7f7365c10e3898cf705d) | 6.3 s | `b1b128e34e96600f` |
+| 06/10/2026, 16:30:10 | failover | B | $0.03 | [be12c2efd5…](https://preprod.cardanoscan.io/transaction/be12c2efd57677d5045c2d604359e6acca6a4b574f1f12afb4e02e1c6c2cf77e) | 6.6 s | `c1a15015c207fab7` |
+
+In each failover round, C's job was killed mid-run. Its payment was cancelled before settlement, and the chain confirms the signed transaction never landed (`final: true` once past its TTL). My agent re-quoted without C and paid B.
 
 ## Masumi escrow evidence
 
-<!-- PR-11: copy the Masumi evidence block from docs/RUNS.md here (written by scripts/demo-check.sh --escrow). -->
+Written by `scripts/demo-check.sh --escrow` from a real run's events. The funds are locked in escrow: nothing was released to the worker.
+
+#### gpu-image-escrow, 06/10/2026, 16:34:39 SGT
+
+| Field | Value |
+| --- | --- |
+| Run | `gpu-image-escrow`, run `01M485KG1XAB9W93HGFDNAPK77`, 06/10/2026, 16:34:39 SGT |
+| Compute | worker A (NVIDIA RTX 4000 Ada Generation 20 GB, 8 vCPU INTEL(R) XEON(R) GOLD 6548Y+, 31.3 GB RAM), image, 6.9 s, sha256 `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| Lock tx | [`9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de`](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de) |
+| Escrow address | `addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g` (Masumi `vested_pay` V2, preprod) |
+| Seller | worker A, `addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga` (`terms.sellerAddress`) |
+| Request hash | `3632e82ae498d157e871540f424e8aa11803d41e0d59067fe6621e64b5c2811f` (`terms.inputHash`; recomputed from the quoted request: match) |
+| Amount and asset | 0.05 tUSDM (`e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`) plus 4.00399 tADA collateral |
+| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de)); pay by 06/10/2026, 16:44:43, submit result 06/10/2026, 16:59:43, unlock 06/10/2026, 17:19:43, dispute 06/10/2026, 17:39:43 (SGT) |
+| Status | Locked in Masumi escrow. Release, refund and dispute tooling is my next step. |
 
 ## Run it locally
 
