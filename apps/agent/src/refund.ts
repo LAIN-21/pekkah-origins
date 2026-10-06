@@ -214,9 +214,14 @@ export async function refund(
     if (!(await d.waitForTx(collateralTxHash))) {
       return { ok: false, reason: "the collateral self-transfer is not on chain yet; run again" };
     }
-    wallet = await d.client.getWalletUtxos();
-    reserve = pureAdaReserve(wallet);
-    if (!reserve) return { ok: false, reason: "no pure-ADA UTxO after the self-transfer" };
+    // Blockfrost's address index can trail the transaction by a few seconds: read again.
+    for (let i = 0; i < 6 && !reserve; i++) {
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, 5_000));
+      wallet = await d.client.getWalletUtxos();
+      reserve = pureAdaReserve(wallet);
+    }
+    if (!reserve)
+      return { ok: false, reason: "no pure-ADA UTxO after the self-transfer; run again" };
   }
 
   const [utxo] = await d.client.getUtxosByOutRef([
