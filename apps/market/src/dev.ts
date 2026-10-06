@@ -7,9 +7,11 @@ import {
   paidRoute,
   txHashFromPaymentHeader,
 } from "@pekkah/payments";
+import { DEADLINE_MAX_SEC, DevDispatchRequest } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
 import type { x402ResourceServer } from "@x402/core/server";
 import express, { type RequestHandler } from "express";
+import type { WorkerRegistry } from "./workers.js";
 
 // Dev-only routes (PLAN 5.4): registered only with PEKKAH_DEV_ROUTES=1, and every request must
 // carry Bearer DEMO_TOKEN. PR-11 turns them off in production.
@@ -184,4 +186,70 @@ export function registerSmokeEscrowRoute(
       }
     },
   );
+}
+
+export interface DevDispatchOptions {
+  registry: WorkerRegistry;
+  log: Logger;
+}
+
+/**
+ * POST /api/dev/dispatch {workerId, workload, params}: an unpaid test job (PR-04 to PR-07b).
+ * Its events carry dev: true. GET /api/dev/results/:jobId returns the last few results.
+ */
+export function registerDevDispatchRoutes(
+  app: express.Express,
+  guard: RequestHandler,
+  o: DevDispatchOptions,
+) {
+  const results = new Map<string, { mime: string; data: Buffer }>();
+
+  app.post("/api/dev/dispatch", guard, express.json({ limit: "16kb" }), async (req, res) => {
+    try {
+      const parsed = DevDispatchRequest.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_request", issues: parsed.error.issues.slice(0, 5) });
+        return;
+      }
+      const { workerId, ...job } = parsed.data;
+      const outcome = await o.registry.dispatch(workerId, {
+        ...job,
+        kind: "dev",
+        deadlineSec: DEADLINE_MAX_SEC,
+        dev: true,
+      });
+      if (!outcome.ok) {
+        const status =
+          outcome.error === "worker offline" ? 404 : outcome.error === "worker busy" ? 409 : 502;
+        res.status(status).json({ error: outcome.error, jobId: outcome.jobId, workerId });
+        return;
+      }
+      results.set(outcome.jobId, { mime: outcome.mime, data: outcome.data });
+      while (results.size > 20) results.delete(results.keys().next().value as string);
+      res.json({
+        jobId: outcome.jobId,
+        workerId,
+        workload: job.workload,
+        durationMs: outcome.durationMs,
+        workerDurationMs: outcome.workerDurationMs,
+        sha256: outcome.sha256,
+        mime: outcome.mime,
+        bytes: outcome.data.length,
+        resultUrl: `/api/dev/results/${outcome.jobId}`,
+      });
+    } catch (err) {
+      o.log.error({ err }, "dev dispatch failed");
+      if (!res.headersSent) res.status(500).json({ error: "internal" });
+      else res.end();
+    }
+  });
+
+  app.get("/api/dev/results/:jobId", guard, (req, res) => {
+    const result = results.get(req.params.jobId ?? "");
+    if (!result) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.type(result.mime).send(result.data);
+  });
 }
