@@ -42,8 +42,10 @@ const env = readEnv("market", {
   SELLER_B_ADDRESS: CardanoAddress.optional(),
   SELLER_C_ADDRESS: CardanoAddress.optional(),
   SELLER_A_MNEMONIC: z.string().optional(),
-  /** `A:<token>,B:<token>,C:<token>`: the allowlist of workers that may join. */
+  /** `A:<token>,B:<token>,C:<token>`: the allowlist of workers that sell. */
   WORKER_TOKENS: z.string().min(1),
+  /** PR-17: workers outside the allowlist join on probation (listed, measured, never sold). */
+  OPEN_WORKER_JOIN: envFlag,
   DEMO_DAILY_RUNS: z.coerce.number().int().min(0).default(40),
   AGENT_TOKEN: z.string().min(16),
   AGENT_URL: z.string().url().default("http://127.0.0.1:4100"),
@@ -142,6 +144,7 @@ const registry = new WorkerRegistry({
   log,
   calibrate: createCalibrator(bus, log),
   ...(seller ? { escrowSeller: seller.sellerAddress } : {}),
+  openJoin: env.OPEN_WORKER_JOIN,
 });
 // The run button. The UI hub is created after the server starts; until then nobody listens.
 let notifyDemo = () => {};
@@ -228,6 +231,7 @@ const server = app.listen(env.MARKET_PORT, () => {
       sellers: Object.keys(sellers),
       masumi: seller ? { seller: seller.sellerAddress } : false,
       releases: releases ? releases.pending().length : "off",
+      openJoin: env.OPEN_WORKER_JOIN,
       facilitator: env.FACILITATOR_URL,
     },
     "market listening",

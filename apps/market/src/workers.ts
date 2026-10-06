@@ -1,8 +1,9 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import type { Server } from "node:http";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import type { IncomingMessage, Server } from "node:http";
 import {
   type Calibration,
   type FractalParams,
+  HELLO_LIMITS,
   HelloMsg,
   type ImageParams,
   type JobKind,
@@ -91,6 +92,8 @@ interface WorkerEntry {
   untrusted: boolean;
   /** The market sells its compute (allowlisted). False means probation (PR-17). */
   selling: boolean;
+  /** The client's IP, for the probation limits. */
+  ip: string;
   /** Workloads calibrated, or being calibrated, on this connection. */
   calibrated: Set<WorkloadName>;
   pending: PendingJob | null;
@@ -107,6 +110,32 @@ export interface WorkerRegistryOptions {
   silentMs?: number;
   /** The Masumi seller's address, while Masumi is on: that worker can sell through escrow. */
   escrowSeller?: string;
+  /**
+   * OPEN_WORKER_JOIN=1 (PR-17): a worker outside the allowlist joins on probation, listed and
+   * measured but never sold, under a display id the market picks.
+   */
+  openJoin?: boolean;
+  /** At most this many workers on probation at once (10), and this many per client IP (2). */
+  maxProbation?: number;
+  maxProbationPerIp?: number;
+}
+
+/**
+ * The client's IP. Deployed, the market's port is not public: Caddy sets X-Forwarded-For
+ * itself and ignores any value a client sends (Caddy 2.5 and later, without trusted_proxies),
+ * so the last entry is the one Caddy wrote. Without the header (local dev), the socket's.
+ */
+export function clientIp(req: IncomingMessage): string {
+  const header = req.headers["x-forwarded-for"];
+  const value = Array.isArray(header) ? header.at(-1) : header;
+  return value?.split(",").at(-1)?.trim() || req.socket.remoteAddress || "unknown";
+}
+
+const UNSAFE = /[^A-Za-z0-9 ()+\-./@_]/g;
+
+/** What the market shows of a string a probation worker sent: safe characters, within bound. */
+export function displayText(value: string, max: number): string {
+  return value.replace(UNSAFE, "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 export function parseWorkerTokens(value: string): Map<string, string> {
@@ -136,7 +165,7 @@ export class WorkerRegistry {
 
   constructor(private readonly o: WorkerRegistryOptions) {
     this.silentMs = o.silentMs ?? WORKER_SILENT_MS;
-    this.wss.on("connection", (socket) => this.accept(socket));
+    this.wss.on("connection", (socket, req: IncomingMessage) => this.accept(socket, clientIp(req)));
   }
 
   /** Called after anything a snapshot shows changes; returns the unsubscribe function. */
@@ -168,7 +197,7 @@ export class WorkerRegistry {
     this.wss.close();
   }
 
-  private accept(socket: WebSocket): void {
+  private accept(socket: WebSocket, ip: string): void {
     let entry: WorkerEntry | null = null;
     const helloTimer = setTimeout(
       () => this.refuse(socket, "no_hello", "send hello first"),
@@ -207,7 +236,7 @@ export class WorkerRegistry {
         if (!entry) {
           if (msg.type !== "hello") return this.refuse(socket, "no_hello", "send hello first");
           clearTimeout(helloTimer);
-          entry = this.onHello(socket, msg);
+          entry = this.onHello(socket, msg, ip);
           return;
         }
         this.touch(entry);
@@ -231,22 +260,75 @@ export class WorkerRegistry {
     }
   }
 
-  private onHello(socket: WebSocket, hello: HelloMsg): WorkerEntry | null {
+  /**
+   * Who joins, and as what. An allowlisted id sells, and only with its own token. With open
+   * join on, any other id joins on probation; without it, it is refused.
+   */
+  private admit(
+    socket: WebSocket,
+    hello: HelloMsg,
+    ip: string,
+  ): { workerId: string; selling: boolean } | null {
     const expected = this.o.tokens.get(hello.workerId);
-    if (!expected || !hello.token || !sameToken(hello.token, expected)) {
+    if (expected) {
+      if (hello.token && sameToken(hello.token, expected)) {
+        return { workerId: hello.workerId, selling: true };
+      }
       this.o.log.warn({ workerId: hello.workerId }, "worker refused: bad token");
       this.refuse(socket, "unauthorized", "unknown worker or bad token");
       return null;
     }
+    if (!this.o.openJoin) {
+      this.o.log.warn({ workerId: hello.workerId }, "worker refused: not on the allowlist");
+      this.refuse(socket, "unauthorized", "unknown worker or bad token");
+      return null;
+    }
+    const joining = [...this.workers.values()].filter((e) => !e.selling && e.socket);
+    if (joining.length >= (this.o.maxProbation ?? 10)) {
+      this.refuse(socket, "probation_full", "too many workers are joining; try again later");
+      return null;
+    }
+    if (joining.filter((e) => e.ip === ip).length >= (this.o.maxProbationPerIp ?? 2)) {
+      this.refuse(socket, "probation_ip_limit", "too many workers joining from this address");
+      return null;
+    }
+    // A display id per connection: the market never shows an id or a name a stranger chose.
+    let workerId: string;
+    do workerId = `joining-${randomBytes(3).toString("hex")}`;
+    while (this.workers.has(workerId));
+    return { workerId, selling: false };
+  }
+
+  private onHello(socket: WebSocket, hello: HelloMsg, ip: string): WorkerEntry | null {
+    const admitted = this.admit(socket, hello, ip);
+    if (!admitted) return null;
+    const { workerId, selling } = admitted;
     let prices: WorkerPrice[];
     try {
       prices = hello.prices.map((p) => ({ ...p, atomic: usdToAtomic(p.usd) }));
     } catch {
-      this.o.log.warn({ workerId: hello.workerId }, "worker refused: price out of range");
+      this.o.log.warn({ workerId }, "worker refused: price out of range");
       this.refuse(socket, "invalid_hello", "price out of range");
       return null;
     }
-    const previous = this.workers.get(hello.workerId);
+    // Probation: only safe characters of what the machine reports, and no name of its own.
+    const text = (value: string, max: number) => (selling ? value : displayText(value, max));
+    const gpu = hello.hardware.gpu;
+    const hardware: WorkerHardware = {
+      ...hello.hardware,
+      cpuModel: text(hello.hardware.cpuModel, HELLO_LIMITS.cpuModel),
+      ...(gpu
+        ? {
+            gpu: {
+              ...gpu,
+              name: text(gpu.name, HELLO_LIMITS.gpuName) || "GPU",
+              driver: text(gpu.driver, HELLO_LIMITS.driver),
+            },
+          }
+        : {}),
+    };
+    const schedule = hello.schedule ? text(hello.schedule, HELLO_LIMITS.schedule) : "";
+    const previous = this.workers.get(workerId);
     if (previous?.socket && previous.socket !== socket) {
       const old = previous.socket;
       previous.socket = null;
@@ -255,13 +337,13 @@ export class WorkerRegistry {
     }
     // Recalibrate on every reconnect (PLAN 6.5).
     const entry: WorkerEntry = {
-      workerId: hello.workerId,
-      name: hello.name,
+      workerId,
+      name: selling ? hello.name : workerId,
       payTo: hello.payTo,
-      hardware: hello.hardware,
+      hardware,
       prices,
-      ...(hello.schedule ? { schedule: hello.schedule } : {}),
-      version: hello.version,
+      ...(schedule ? { schedule } : {}),
+      version: selling ? hello.version : displayText(hello.version, HELLO_LIMITS.version),
       socket,
       lastSeenAt: new Date(),
       warm: [...hello.warm],
@@ -269,22 +351,26 @@ export class WorkerRegistry {
       calibration: {},
       calibrating: 0,
       untrusted: false,
-      selling: true,
+      selling,
+      ip,
       calibrated: new Set(),
       pending: null,
     };
-    this.workers.set(hello.workerId, entry);
+    this.workers.set(workerId, entry);
     this.touch(entry);
+    // A worker on probation learns its display id here.
     socket.send(
-      JSON.stringify({
-        type: "welcome",
-        workerId: hello.workerId,
-        serverTime: new Date().toISOString(),
-      }),
+      JSON.stringify({ type: "welcome", workerId, serverTime: new Date().toISOString() }),
     );
     this.o.log.info(
-      { workerId: entry.workerId, name: entry.name, version: entry.version, warm: entry.warm },
-      "worker online",
+      {
+        workerId,
+        name: entry.name,
+        version: entry.version,
+        warm: entry.warm,
+        ...(selling ? {} : { probation: true, sentId: displayText(hello.workerId, 32) }),
+      },
+      selling ? "worker online" : "worker joined on probation",
     );
     this.o.bus.emit({
       source: "market",
@@ -314,6 +400,8 @@ export class WorkerRegistry {
     entry.busy = false;
     entry.currentJobId = undefined;
     this.failPending(entry, "worker disconnected");
+    // A worker on probation leaves the registry; its next connection gets a new display id.
+    if (!entry.selling) this.workers.delete(entry.workerId);
     this.changed();
     this.o.log.info({ workerId: entry.workerId, reason }, "worker offline");
     this.o.bus.emit({
@@ -472,6 +560,10 @@ export class WorkerRegistry {
     const refused = (error: string): Promise<JobOutcome> =>
       Promise.resolve({ ok: false, jobId, workerId, error, durationMs: 0 });
     if (!entry?.socket) return refused("worker offline");
+    // Defense in depth: a worker on probation only ever runs calibration.
+    if (!entry.selling && request.kind !== "calibration") {
+      return refused("worker on probation: calibration only");
+    }
     if (entry.pending) return refused("worker busy");
     const socket = entry.socket;
 
@@ -546,10 +638,13 @@ export class WorkerRegistry {
     return this.workers.get(workerId)?.socket != null;
   }
 
-  /** Connected, trusted, not calibrating and not running a job: it can take a paid job now. */
+  /**
+   * Selling, connected, trusted, not calibrating and not running a job: it can take a paid job
+   * now. A worker on probation never can.
+   */
   isAvailable(workerId: string): boolean {
     const entry = this.workers.get(workerId);
-    return entry !== undefined && this.statusOf(entry) === "online";
+    return entry?.selling === true && this.statusOf(entry) === "online";
   }
 
   // Reads ------------------------------------------------------------------------------
