@@ -41,8 +41,9 @@ const { values } = parseArgs({
   },
 });
 const rounds = Number(values.runs);
-if (!Number.isInteger(rounds) || rounds < 1) {
-  console.error("demo-check: --runs takes a positive integer");
+// --runs 0 only makes sense with --escrow: the escrow run alone.
+if (!Number.isInteger(rounds) || rounds < (values.escrow ? 0 : 1)) {
+  console.error("demo-check: --runs takes a positive integer, or 0 with --escrow");
   process.exit(2);
 }
 process.env.PEKKAH_ENV_FILE ||= join(homedir(), ".pekkah", "env", "market.env");
