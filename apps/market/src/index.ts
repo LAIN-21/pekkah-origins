@@ -21,7 +21,7 @@ import { OfferStore } from "./offers.js";
 import { registerPaidJobRoute } from "./paid.js";
 import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
-import { createResultSubmitter } from "./result-submit.js";
+import { tryCreateResultSubmitter } from "./result-submit.js";
 import { registerAgentEvents, registerReadRoutes } from "./routes.js";
 import { RunStore } from "./runs.js";
 import { UiHub } from "./ui.js";
@@ -85,23 +85,26 @@ bus.subscribe((event) => {
 });
 // PR-10b: with Masumi on, the market submits each escrow job's result hash as Seller A, with
 // the key it already holds to sign the escrow terms. Chain access goes through the facilitator.
-const escrowResults =
+const submitResult =
   seller && env.SELLER_A_MNEMONIC && env.SELLER_A_ADDRESS
-    ? {
-        submit: createResultSubmitter({
-          chainUrl: `${env.FACILITATOR_URL.replace(/\/+$/, "")}/blockfrost`,
-          sellerMnemonic: assertMnemonic("SELLER_A_MNEMONIC", env.SELLER_A_MNEMONIC),
-          sellerAddress: env.SELLER_A_ADDRESS,
-          log,
-        }),
-        txFound: async (txHash: string) => {
-          const res = await fetch(`${env.FACILITATOR_URL.replace(/\/+$/, "")}/tx/${txHash}`, {
-            signal: AbortSignal.timeout(20_000),
-          });
-          return res.ok && ((await res.json()) as { found?: boolean }).found === true;
-        },
-      }
-    : undefined;
+    ? tryCreateResultSubmitter({
+        chainUrl: `${env.FACILITATOR_URL.replace(/\/+$/, "")}/blockfrost`,
+        sellerMnemonic: assertMnemonic("SELLER_A_MNEMONIC", env.SELLER_A_MNEMONIC),
+        sellerAddress: env.SELLER_A_ADDRESS,
+        log,
+      })
+    : null;
+const escrowResults = submitResult
+  ? {
+      submit: submitResult,
+      txFound: async (txHash: string) => {
+        const res = await fetch(`${env.FACILITATOR_URL.replace(/\/+$/, "")}/tx/${txHash}`, {
+          signal: AbortSignal.timeout(20_000),
+        });
+        return res.ok && ((await res.json()) as { found?: boolean }).found === true;
+      },
+    }
+  : undefined;
 const payments = createMarketPayments(
   {
     facilitatorUrl: env.FACILITATOR_URL,

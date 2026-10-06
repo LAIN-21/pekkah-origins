@@ -1,6 +1,8 @@
 import { Data } from "@evolution-sdk/evolution";
+import type { Logger } from "@pekkah/runtime";
 import { describe, expect, it } from "vitest";
-import { submittedDatum } from "./result-submit.js";
+import { throwawayMnemonic } from "../../../packages/runtime/src/test-support/mnemonic.js";
+import { submittedDatum, tryCreateResultSubmitter } from "./result-submit.js";
 
 // The inline datum of a real lock on preprod (tx a6be16bc…#0, public chain data).
 const LOCK_DATUM = [
@@ -41,5 +43,42 @@ describe("the datum after SubmitResult", () => {
     expect(() => submittedDatum(submitted, RESULT, 1n)).toThrow("not in FundsLocked");
     expect(() => submittedDatum(locked, "abc", 1n)).toThrow("32 bytes");
     expect(() => submittedDatum(Data.constr(0n, []), RESULT, 1n)).toThrow("vested_pay V2");
+  });
+});
+
+describe("setting up the submitter", () => {
+  const options = (sellerAddress: string) => {
+    const errors: string[] = [];
+    const log = { error: (m: string) => void errors.push(m) } as unknown as Logger;
+    const o = {
+      chainUrl: "http://127.0.0.1:9/blockfrost",
+      sellerMnemonic: throwawayMnemonic(),
+      sellerAddress,
+      log,
+    };
+    return { o, errors };
+  };
+
+  it("disables only result submission when it cannot be set up", () => {
+    const { o, errors } = options("addr_test1notanaddress");
+    expect(tryCreateResultSubmitter(o)).toBeNull();
+    expect(errors[0]).toMatch(/^Escrow result submission disabled: /);
+    expect(errors[0]).not.toContain(o.sellerMnemonic.split(" ")[0]);
+  });
+
+  it("refuses a script address as the seller", () => {
+    const { o, errors } = options(
+      "addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g",
+    );
+    expect(tryCreateResultSubmitter(o)).toBeNull();
+    expect(errors[0]).toContain("must be a key address");
+  });
+
+  it("builds offline from a valid seller key address", () => {
+    const { o } = options(
+      // Seller A's public payout address on preprod (README): a key address.
+      "addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga",
+    );
+    expect(typeof tryCreateResultSubmitter(o)).toBe("function");
   });
 });

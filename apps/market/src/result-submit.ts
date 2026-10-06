@@ -106,21 +106,47 @@ export type SubmitResultOutcome =
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Seller A's wallet over the facilitator's passthrough. A wallet error can name words, so its
+ * message never leaves here. */
+function sellerClient(o: ResultSubmitterOptions) {
+  try {
+    return Client.make(preprod)
+      .withBlockfrost({ baseUrl: o.chainUrl })
+      .withSeed({ mnemonic: o.sellerMnemonic });
+  } catch {
+    throw new Error("could not create the Seller A wallet");
+  }
+}
+
+/**
+ * The submitter, or null with the reason logged: a failure here disables escrow result
+ * submission only, never the market (as with a Masumi seller key that does not match).
+ */
+export function tryCreateResultSubmitter(o: ResultSubmitterOptions) {
+  try {
+    return createResultSubmitter(o);
+  } catch (err) {
+    o.log.error(
+      `Escrow result submission disabled: ${err instanceof Error ? err.message : "setup failed"}`,
+    );
+    return null;
+  }
+}
+
 /**
  * Submits escrow results as Seller A, one transaction at a time (one wallet). Chain reads,
  * script evaluation and the submit all go through the facilitator.
  */
 export function createResultSubmitter(o: ResultSubmitterOptions) {
   const now = o.now ?? Date.now;
-  const client = Client.make(preprod)
-    .withBlockfrost({ baseUrl: o.chainUrl })
-    .withSeed({ mnemonic: o.sellerMnemonic });
+  // The checks whose errors name no secret come first.
   const script = masumiValidator();
   const escrowAddress = masumiEscrowAddress(NETWORK);
   const seller = addressCredentials(o.sellerAddress);
   if (seller.payment.isScript) throw new Error("the Masumi seller must be a key address");
   const sellerKeyHash = KeyHash.fromHex(seller.payment.hash);
   const cooldownMs = BigInt(MASUMI_DEFAULT_DEPLOYMENT.cooldownPeriod);
+  const client = sellerClient(o);
   let queue: Promise<unknown> = Promise.resolve();
 
   /** The escrow output, once the facilitator's view of the chain has it (polls 5 s apart). */
