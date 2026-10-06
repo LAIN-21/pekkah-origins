@@ -4,6 +4,11 @@ Pekkah is a market where idle machines sell compute per job to AI agents. My age
 
 **Live:** https://146-190-188-100.sslip.io (Cardano preprod, test tokens only)
 
+Three things came on top of the basic market:
+- **Escrow, end to end.** Through Masumi's escrow, the payment is locked after the job delivers. The market then records the result's hash in the escrow as worker A, and after the unlock time releases it: the price to worker A, the collateral back to the buyer. No human step.
+- **Claude shops for compute.** With the Pekkah MCP server, Claude looks at the market, gets free quotes, keeps to the budget I gave and asks me before it pays more.
+- **Any machine can join.** One command installs the worker on a Linux machine with Docker. It joins on probation: listed and measured, but it sells nothing until I add it to the allowlist.
+
 I built it solo during the TOKEN2049 Origins Hackathon (6 to 7 October 2026). The write-up is in [docs/WRITEUP.md](docs/WRITEUP.md).
 
 ## What you can watch
@@ -22,13 +27,16 @@ The run button starts my agent on one of these scenarios:
 - **cpu-counter**: an HD render for at most $0.015. Nothing fits, so the market answers with the market price ($0.03) and the next best offer (C at $0.02). My agent's private ceiling allows it, so it accepts.
 - **cpu-tight**: a heavy render within 20 s, at most $0.03. A is over budget, C is too slow by its measured speed, so B wins.
 - **failover**: my agent buys C and I kill the job mid-run. Nothing is charged, and the agent re-quotes without C and pays B.
-- **gpu-image-escrow**: the payment is locked in Masumi's escrow on preprod after the job delivers, with worker A as the seller.
+- **gpu-image-escrow**: the payment is locked in Masumi's escrow on preprod after the job delivers, with worker A as the seller. The market records the result's hash in the escrow as worker A. About 31 minutes after the 402, the market releases the escrow: the price to worker A, the collateral back to the buyer.
+
+The page follows a run live: every step appears as the backend emits it, in order, and the current step stays in view until you scroll. `?run=<runId>` reopens any recent run, for example to watch an escrow's release after its unlock time. Machines on probation are listed under "Joining the network", with the id the market gave them.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   agent["Your agent<br/>any x402 client"]
+  claude["Claude<br/>Pekkah MCP server"]
   web["Browser UI"]
   subgraph host["Market host"]
     caddy["Caddy<br/>HTTPS"]
@@ -45,6 +53,7 @@ flowchart LR
   chain[("Cardano preprod<br/>tUSDM, Masumi escrow")]
 
   agent -- "quote, 402, signed payment" --> caddy
+  claude -- "quote, 402, signed payment" --> caddy
   web -- "/api and /ws/ui" --> caddy
   caddy --> market
   hosted --> market
@@ -55,9 +64,10 @@ flowchart LR
   C -- "wss /ws/worker" --> caddy
 ```
 
-- `apps/market`: quotes, offers, the paid routes, the worker registry, the event log and the UI's WebSocket.
+- `apps/market`: quotes, offers, the paid routes, the worker registry, the event log and the UI's WebSocket. It also submits escrow results and releases escrows after their unlock, as Seller A.
 - `apps/facilitator`: the x402 facilitator for `cardano:preprod`. It verifies signed payments and broadcasts them through Blockfrost.
 - `apps/agent`: my agent. It runs as a CLI or as the hosted service behind the run button.
+- `apps/mcp`: the MCP server Claude uses to shop, with the same x402 buyer as my agent ([apps/mcp/README.md](apps/mcp/README.md)).
 - `apps/worker`: runs on each machine. It measures the hardware, dials out to the market and runs jobs in sandboxed containers.
 - `packages/matcher`: the pure matching function. `packages/protocol`: every schema, shared by all apps.
 - `workloads/fractal`: a deterministic CPU render in integer arithmetic, so the same job gives the same bytes on every CPU. `workloads/flux`: the GPU image server on worker A.
@@ -73,7 +83,15 @@ Workers need no inbound port: they dial out to the market. Each CPU job runs in 
 5. **Run.** The facilitator verifies the signed transaction. The market dispatches the job to that worker and waits for the result.
 6. **Settle.** Only after the result arrives does the facilitator broadcast the transaction and wait for it on chain. The agent gets the result and a receipt with a Cardanoscan link. If the job fails, the market's settlement never broadcasts the transaction, so nothing is charged. The market does hold the signed transaction until its TTL, so this relies on an honest market (see the honest limits); escrow removes that trust.
 
-With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Then the market submits the delivered result's hash into the escrow as worker A (Masumi's `SubmitResult`, signed with Seller A's key). The funds stay locked: nothing is released to the worker. Release, refund and dispute are my next step.
+With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Then:
+- **Result.** The market records the delivered result's hash in the escrow as worker A (Masumi's `SubmitResult`, signed with Seller A's key). The funds stay locked.
+- **Release.** After the unlock time, about 31 minutes after the 402, the market releases the escrow as worker A (Masumi's `Withdraw`). The tUSDM goes to worker A and the buyer's collateral comes back, in one transaction.
+
+Every escrow transaction is evaluated against the real validator before it is signed. Dispute is my next step.
+
+## Shop from Claude
+
+The Pekkah MCP server gives Claude five tools: `pekkah_market`, `pekkah_quote`, `pekkah_buy`, `pekkah_result`, and the one-shot `pekkah_generate_image`. Quotes are free. When I give a budget and an offer fits it, Claude buys. When nothing fits, the buy tool refuses until Claude has asked me, so the ask happens even if the model skips its instructions. When I say yes, the market records my agent's statement that I approved. That is a statement, not proof: the wallet's spend caps stay the hard limit. Escrow is on by default for worker A, and the page follows Claude's run like any other, labelled "Claude via MCP". Setup for Claude Desktop and Claude Code is in [apps/mcp/README.md](apps/mcp/README.md).
 
 ## Real runs
 
@@ -92,9 +110,27 @@ In each failover round, C's job was killed mid-run. Its payment was cancelled be
 
 ## Masumi escrow evidence
 
-Written by `scripts/demo-check.sh --escrow` from a real run's events. The funds are locked in escrow: nothing was released to the worker.
+Written by `scripts/demo-check.sh --escrow` from real runs' events.
 
-#### gpu-image-escrow, 2026-10-06 16:34:39 SGT
+#### Lock, result and release: gpu-image-escrow, 2026-10-06 22:49:48 SGT
+
+| Field | Value |
+| --- | --- |
+| Run | `gpu-image-escrow`, run `01M48V2DCER28KCA4Z59PQ3VJ0`, 2026-10-06 22:49:48 SGT |
+| Compute | worker A (NVIDIA RTX 4000 Ada Generation 20 GB, 8 vCPU INTEL(R) XEON(R) GOLD 6548Y+, 31.3 GB RAM), image, 6.9 s, sha256 `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| Lock tx | [`2449cbfec113d568211ebf49c5931c80dd0975bc4934c81ff47cecf36f7d29b5`](https://preprod.cardanoscan.io/transaction/2449cbfec113d568211ebf49c5931c80dd0975bc4934c81ff47cecf36f7d29b5) |
+| Escrow address | `addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g` (Masumi `vested_pay` V2, preprod) |
+| Seller | worker A, `addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga` (`terms.sellerAddress`) |
+| Request hash | `3632e82ae498d157e871540f424e8aa11803d41e0d59067fe6621e64b5c2811f` (`terms.inputHash`; recomputed from the quoted request: match) |
+| Amount and asset | 0.05 tUSDM (`e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`) plus 4.00399 tADA collateral |
+| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/2449cbfec113d568211ebf49c5931c80dd0975bc4934c81ff47cecf36f7d29b5)); pay by 2026-10-06 22:59:57, submit result 2026-10-06 23:05:57, unlock 2026-10-06 23:21:27, dispute 2026-10-06 23:36:57 (SGT) |
+| Result submitted | [`a137eb54111ec643d04b790bf6d73d12be666f3b455d79b8dad8d9558ffd09d1`](https://preprod.cardanoscan.io/transaction/a137eb54111ec643d04b790bf6d73d12be666f3b455d79b8dad8d9558ffd09d1): Masumi SubmitResult as the seller. The escrow datum now holds the result hash `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` (the delivered result's sha256) and the state ResultSubmitted; the funds stay locked |
+| Released | [`055488e542c1e61e5eb1e92a460a77c3da5cdf6926eb9d6afa4c95de4a507eed`](https://preprod.cardanoscan.io/transaction/055488e542c1e61e5eb1e92a460a77c3da5cdf6926eb9d6afa4c95de4a507eed): Masumi Withdraw as the seller after the unlock, 2026-10-06 23:23:55 SGT: 0.05 tUSDM to worker A (`addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga`), and the 4.00399 tADA collateral back to the buyer (`addr_test1qptcvmw5j9awp37a2a6ant3fx33a8zex7rvmkyg0823n6t6gsxx6cymneachcxvmu6awzjj8t6yndnkmy86u3mmwjy4qv86get`) |
+| Status | Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back. |
+
+#### The first lock: gpu-image-escrow, 2026-10-06 16:34:39 SGT
+
+The Masumi minimum, from before release existed. The block below is as it was written then.
 
 | Field | Value |
 | --- | --- |
@@ -143,35 +179,26 @@ pnpm agent run cpu-counter --market http://127.0.0.1:8080
 
 ## Run a worker
 
-A worker is one container on any machine with Docker. It needs no inbound port.
-
-1. Copy `deploy/env-examples/worker-b.env.example` to `worker.env` and fill it in:
-   - `WORKER_TOKEN`: the market only accepts workers on its allowlist.
-   - `MARKET_WS_URL`: for example `wss://<market host>/ws/worker`.
-   - `PAYOUT_ADDRESS`: the address that receives this worker's payments.
-   - `PRICE_FRACTAL_USD`, `JOB_CPUS` and `JOB_MEMORY`.
-2. Build the job image and start the worker:
+Any Linux machine with Docker joins with one command:
 
 ```bash
-docker build -t pekkah/fractal:local workloads/fractal
+curl -fsSL https://raw.githubusercontent.com/LAIN-21/pekkah-origins/main/install.sh | sudo sh -s -- --payout addr_test1…
 ```
 
-```bash
-docker compose -p pekkah-worker -f deploy/worker.compose.yml --env-file worker.env up -d --build
-```
-
-The worker reports its hardware, passes a calibration job whose answer the market checks, and then takes jobs.
+The installer checks the machine, pulls the published worker and job images, runs a local benchmark, and starts the worker. The worker dials out to the market, so it needs no inbound port. It joins **on probation**: the market lists it under an id it chooses (`joining-` plus 6 hex characters), measures it with a calibration job whose answer it checks, and never sells its compute. A worker sells once I add its id to the allowlist; then it installs with `--id` and `--token`. `--uninstall` removes everything. [docs/WORKER.md](docs/WORKER.md) has the details: the trust model, what the market checks, and the GPU path.
 
 ## Honest limits
 
 - Preprod only, paid in test tokens.
-- Workers join by allowlist (one token each) for the demo. Open registration is next.
-- CPU work is answer-checked at calibration, not on every job. GPU work is timed, not verified.
-- Between verification and settlement, the market holds the buyer's signed transaction. If the job fails, the market discards it, but a dishonest market could still broadcast it before its 10-minute TTL. Escrow is the fix: with Masumi the money sits in a contract bound to the request, not with the market or the worker. Today I can lock into Masumi's escrow; release, refund and dispute tooling is the next step, and until it exists my test locks stay locked.
+- **Probation.** New workers join on probation: listed and measured, never sold, until I allowlist them. Open join is on only where `OPEN_WORKER_JOIN=1` (the hosted demo).
+- **Reported versus measured.** Hardware is reported by the machine; speed is measured by the market. CPU work is answer-checked at calibration, not on every job. GPU work is timed. The market checks that each image is a PNG of the requested size, not what it shows.
+- **Over-budget buys.** An over-budget buy rests on my agent's statement that I approved it. The wallet's spend caps are the hard limit.
+- **Seller A's key.** The market holds it: it signs the escrow terms, the result hash and the release, so in this demo the market could also spend Seller A's funds. Next: the worker signs over its WebSocket.
+- **Escrow coverage.** Release is built: it comes after the unlock, about 31 minutes after the 402. Dispute is next.
+- **Default payments.** Between verification and settlement, the market holds the buyer's signed transaction. If the job fails, the market discards it, but a dishonest market could still broadcast it before its 10-minute TTL. Escrow removes that trust.
 - The reverse risk also exists: a buyer could spend the same inputs elsewhere before settlement. The worker then loses that job's compute, but the market withholds the result.
-- Every token payment carries about 1.2 tADA of minimum ADA, which makes sub-cent payments uneconomic on mainnet today. Next: prepaid deposits with batched settlement. No credit for anonymous agents.
-- One market instance with in-memory state. A restart drops open offers; agents re-quote.
-- For Masumi, the market holds Seller A's key to sign the escrow terms, so in this demo the market could also spend Seller A's funds. Next: the worker signs the terms itself over its WebSocket.
+- **One market instance** with in-memory state. A restart drops open offers, and agents re-quote.
+- **Min-ADA.** Every token payment carries about 1.2 tADA of minimum ADA, which makes sub-cent payments uneconomic on mainnet today. Next: prepaid deposits with batched settlement. No credit for anonymous agents.
 
 ## Licence
 
