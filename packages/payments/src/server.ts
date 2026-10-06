@@ -71,10 +71,10 @@ export function createResourceServer(options: ResourceServerOptions): x402Resour
  */
 export function masumiSeller(mnemonic: string, expectedAddress: string): MasumiSellerSigner {
   // Checked first: the wallet library would put an unknown word in its error message.
-  assertMnemonic("SELLER_A_MNEMONIC", mnemonic);
+  const normalized = assertMnemonic("SELLER_A_MNEMONIC", mnemonic);
   let seller: MasumiSellerSigner;
   try {
-    seller = toMasumiSellerSigner({ mnemonic, network: NETWORK });
+    seller = toMasumiSellerSigner({ mnemonic: normalized, network: NETWORK });
   } catch {
     throw new Error("could not derive the Masumi seller from SELLER_A_MNEMONIC");
   }
