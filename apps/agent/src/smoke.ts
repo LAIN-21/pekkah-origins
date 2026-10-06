@@ -102,6 +102,11 @@ if (result.txHash) console.log(`explorer   ${explorerTxUrl(result.txHash)}`);
 console.log(
   `receipt    ${result.settle ? `PAYMENT-RESPONSE success=${result.settle.success}` : "no PAYMENT-RESPONSE"}`,
 );
+if (result.refused) {
+  console.log(
+    `refused    ${result.refused.txHash} (${result.refused.reason}): never broadcast, re-signed once`,
+  );
+}
 console.log(`body       ${JSON.stringify(result.body)}`);
 
 if (result.settle?.success && result.txHash) {

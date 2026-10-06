@@ -72,3 +72,49 @@ export async function waitForTx(
     await new Promise((resolve) => setTimeout(resolve, interval));
   }
 }
+
+/** The wallet's unspent outputs as Blockfrost sees them, as `txHash#index`. */
+export async function addressUtxoRefs(
+  config: BlockfrostConfig,
+  address: string,
+): Promise<Set<string>> {
+  const refs = new Set<string>();
+  for (let page = 1; page <= 10; page++) {
+    const res = await get(config, `/addresses/${address}/utxos?count=100&page=${page}`);
+    if (res.status === 404) return refs;
+    if (!res.ok) throw new Error(`Blockfrost /addresses/utxos answered ${res.status}`);
+    const rows = (await res.json()) as { tx_hash: string; output_index: number }[];
+    for (const row of rows) refs.add(`${row.tx_hash}#${row.output_index}`);
+    if (rows.length < 100) return refs;
+  }
+  return refs;
+}
+
+/**
+ * After a settled payment: the transaction is on Blockfrost, and the wallet's UTXO view no
+ * longer lists any input it spent, plus one more poll as margin. Blockfrost answers from
+ * several backends, and a view one block behind would hand the next payment a spent input
+ * (the facilitator then refuses it as nonce_not_on_chain).
+ */
+export async function waitForSettled(
+  config: BlockfrostConfig,
+  address: string,
+  txHash: string,
+  inputs: string[],
+  options: { timeoutMs?: number } = {},
+): Promise<TxSighting> {
+  const deadline = Date.now() + (options.timeoutMs ?? 90_000);
+  const sighting = await waitForTx(config, txHash, { timeoutMs: deadline - Date.now() });
+  const spent = new Set(inputs.map((ref) => ref.toLowerCase()));
+  while (Date.now() + MIN_POLL_MS < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, MIN_POLL_MS));
+    try {
+      const refs = await addressUtxoRefs(config, address);
+      if (![...refs].some((ref) => spent.has(ref.toLowerCase()))) break;
+    } catch {
+      // Retried at the next poll.
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, MIN_POLL_MS));
+  return sighting;
+}

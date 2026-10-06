@@ -1,8 +1,14 @@
 import { NETWORK, type TransferMethod, usdToAtomic } from "@pekkah/protocol";
 import { assertMnemonic } from "@pekkah/runtime";
-import { decodeCardanoTransaction, toClientCardanoSigner } from "@x402/cardano";
+import {
+  decodeCardanoTransaction,
+  ERR_CHAIN_LOOKUP_FAILED,
+  ERR_INPUT_NOT_AVAILABLE,
+  ERR_NONCE_NOT_ON_CHAIN,
+  toClientCardanoSigner,
+} from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/client";
-import type { PaymentPayload, SettleResponse } from "@x402/core/types";
+import type { SettleResponse } from "@x402/core/types";
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
 import { Agent, setGlobalDispatcher } from "undici";
 import {
@@ -10,6 +16,7 @@ import {
   type Balance,
   type BlockfrostConfig,
   type TxSighting,
+  waitForSettled,
   waitForTx,
 } from "./blockfrost.js";
 import { check402, type PaymentExpectation } from "./check.js";
@@ -20,6 +27,14 @@ import { PaymentMutex } from "./mutex.js";
 // HTTP wait in the buyer's process gets 600 s (PLAN 4.1, fact 9). Node's global fetch honours
 // this dispatcher.
 setGlobalDispatcher(new Agent({ headersTimeout: 600_000, bodyTimeout: 600_000 }));
+
+/** Verify refusals that mean the chain view was stale; a refused payment is never broadcast. */
+const STALE_VIEW = new Set([
+  ERR_NONCE_NOT_ON_CHAIN,
+  ERR_INPUT_NOT_AVAILABLE,
+  ERR_CHAIN_LOOKUP_FAILED,
+]);
+const STALE_RETRY_DELAY_MS = 20_000;
 
 export interface BuyerConfig {
   mnemonic: string;
@@ -63,6 +78,8 @@ export interface BuyResult {
   paymentHeader?: string;
   /** From PAYMENT-RESPONSE: present only when the payment settled. */
   settle?: SettleResponse;
+  /** A first signature the facilitator refused on a stale chain view; it was never broadcast. */
+  refused?: { txHash: string; reason: string };
   durationMs: number;
 }
 
@@ -72,6 +89,8 @@ interface Pending {
   offerId?: string;
   txHash?: string;
   paymentHeader?: string;
+  inputs?: string[];
+  refused?: { txHash: string; reason: string };
 }
 
 export interface Buyer {
@@ -127,8 +146,10 @@ export function createBuyer(config: BuyerConfig): Buyer {
 
   client.onAfterPaymentCreation(async ({ paymentPayload }) => {
     if (!pending) return;
-    const txHash = txHashOf(paymentPayload);
+    const tx = decodeCardanoTransaction(String(paymentPayload.payload.transaction));
+    const txHash = tx.txHash;
     pending.txHash = txHash;
+    pending.inputs = tx.inputs;
     pending.paymentHeader = http.encodePaymentSignatureHeader(paymentPayload)["PAYMENT-SIGNATURE"];
     ledger.record(pending.runId, paymentPayload.accepted.amount);
     try {
@@ -146,6 +167,18 @@ export function createBuyer(config: BuyerConfig): Buyer {
     } catch {
       // Reporting never blocks a payment.
     }
+  });
+
+  // A refusal on a stale chain view: wait for the views to agree, then re-sign once with
+  // fresh UTXOs. The x402 fetch wrapper retries at most once.
+  client.onPaymentResponse(async (ctx) => {
+    const reason = ctx.paymentRequired?.error;
+    if (!pending || pending.refused || ctx.settleResponse || !reason || !STALE_VIEW.has(reason)) {
+      return;
+    }
+    pending.refused = { txHash: pending.txHash ?? "", reason };
+    await new Promise((resolve) => setTimeout(resolve, STALE_RETRY_DELAY_MS));
+    return { recovered: true };
   });
 
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
@@ -182,13 +215,15 @@ export function createBuyer(config: BuyerConfig): Buyer {
             body = text;
           }
           if (settle?.success && current.txHash) {
-            hold(waitForTx(config.blockfrost, current.txHash));
+            const address = signer.getAddress();
+            hold(waitForSettled(config.blockfrost, address, current.txHash, current.inputs ?? []));
           }
           return {
             status: res.status,
             body,
             ...(current.txHash ? { txHash: current.txHash } : {}),
             ...(current.paymentHeader ? { paymentHeader: current.paymentHeader } : {}),
+            ...(current.refused ? { refused: current.refused } : {}),
             ...(settle ? { settle } : {}),
             durationMs: Date.now() - started,
           };
@@ -202,8 +237,4 @@ export function createBuyer(config: BuyerConfig): Buyer {
     waitForTx: (txHash, options) => waitForTx(config.blockfrost, txHash, options),
     idle: () => mutex.idle(),
   };
-}
-
-function txHashOf(paymentPayload: PaymentPayload): string {
-  return decodeCardanoTransaction(String(paymentPayload.payload.transaction)).txHash;
 }
