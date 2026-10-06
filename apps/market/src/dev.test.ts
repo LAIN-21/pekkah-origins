@@ -1,15 +1,21 @@
 import type { AddressInfo } from "node:net";
+import { masumiSeller } from "@pekkah/payments";
 import { DEFAULT_ASSET, NETWORK } from "@pekkah/protocol";
 import { createLogger } from "@pekkah/runtime";
-import { toFacilitatorCardanoSigner } from "@x402/cardano";
+import {
+  masumiEscrowAddress,
+  toFacilitatorCardanoSigner,
+  toMasumiSellerSigner,
+} from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/facilitator";
+import type { MasumiSellerSigner } from "@x402/cardano/exact/server";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { SupportedResponse } from "@x402/core/types";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
-import { bearerGuard, registerSmokeRoute } from "./dev.js";
+import { bearerGuard, registerSmokeEscrowRoute, registerSmokeRoute } from "./dev.js";
 import { EventBus } from "./events.js";
 import { createMarketPayments } from "./payments.js";
 
@@ -39,10 +45,17 @@ function inProcessFacilitator(): FacilitatorClient {
   };
 }
 
+// The public BIP-39 test vector: a throwaway seller key that never holds funds.
+const TEST_MNEMONIC = `${"abandon ".repeat(11)}about`;
+
 const servers: { close: () => void }[] = [];
-async function start(devRoutes: boolean): Promise<string> {
+async function start(devRoutes: boolean, masumi?: MasumiSellerSigner): Promise<string> {
   const bus = new EventBus(log);
-  const payments = createMarketPayments({ facilitator: inProcessFacilitator() }, bus, log);
+  const payments = createMarketPayments(
+    { facilitator: inProcessFacilitator(), ...(masumi ? { masumi: { seller: masumi } } : {}) },
+    bus,
+    log,
+  );
   const app = createApp({
     version: "0.1.0",
     sha: "test",
@@ -50,13 +63,12 @@ async function start(devRoutes: boolean): Promise<string> {
     workersOnline: () => 0,
     routes: (app) => {
       if (!devRoutes) return;
+      const common = { ...payments, asset: DEFAULT_ASSET, l1Confirmations: 0, log };
       registerSmokeRoute(app, bearerGuard(TOKEN), {
-        ...payments,
+        ...common,
         sellers: { B: SELLER_B, C: SELLER_C },
-        asset: DEFAULT_ASSET,
-        l1Confirmations: 0,
-        log,
       });
+      if (masumi) registerSmokeEscrowRoute(app, bearerGuard(TOKEN), common);
     },
   });
   const server = app.listen(0, "127.0.0.1");
@@ -133,5 +145,43 @@ describe("POST /api/dev/smoke/:seller", () => {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/dev/smoke-escrow (Masumi)", () => {
+  const seller = toMasumiSellerSigner({ mnemonic: TEST_MNEMONIC, network: NETWORK });
+
+  it("answers an unpaid request with a seller-signed quote to lock at the escrow", async () => {
+    const escrowUrl = await start(true, masumiSeller(TEST_MNEMONIC, seller.sellerAddress));
+    const res = await fetch(`${escrowUrl}/api/dev/smoke-escrow`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: "{}",
+    });
+    expect(res.status).toBe(402);
+    const [accept] = decodePaymentRequiredHeader(res.headers.get("payment-required") ?? "").accepts;
+    expect(accept).toMatchObject({
+      network: "cardano:preprod",
+      amount: "10000",
+      asset: DEFAULT_ASSET,
+      payTo: masumiEscrowAddress(NETWORK),
+      maxTimeoutSeconds: 600,
+    });
+    const extra = accept?.extra as {
+      assetTransferMethod: string;
+      terms: Record<string, string>;
+      inputCommitment: { parts: { name: string; content: { url: string } }[] };
+    };
+    expect(extra.assetTransferMethod).toBe("masumi");
+    expect(extra.terms.sellerAddress).toBe(seller.sellerAddress);
+    expect(extra.inputCommitment.parts[0]?.name).toBe("resource");
+    expect(extra.inputCommitment.parts[0]?.content.url).toMatch(/\/api\/dev\/smoke-escrow$/);
+    const deadlines = ["payByTime", "submitResultTime", "unlockTime", "externalDisputeUnlockTime"];
+    const times = deadlines.map((k) => Number(extra.terms[k]));
+    expect(times.every((t, i) => i === 0 || t > (times[i - 1] ?? 0))).toBe(true);
+  });
+
+  it("refuses a seller key that does not derive the configured address", () => {
+    expect(() => masumiSeller(TEST_MNEMONIC, SELLER_B)).toThrow(/derives/);
   });
 });

@@ -19,10 +19,11 @@ export function paymentKey(request: HTTPRequestContext | undefined, txHash: stri
   if (!request) return null;
   const seller = smokeSellerFromPath(request.path);
   if (seller) return `smoke:${seller}:${txHash}`;
+  if (request.path === "/api/dev/smoke-escrow") return `smoke-escrow:${txHash}`;
   return null;
 }
 
-const isDev = (key: string) => key.startsWith("smoke:");
+const isDev = (key: string) => key.startsWith("smoke");
 
 export function createMarketPayments(
   options: ResourceServerOptions,

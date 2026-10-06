@@ -193,6 +193,12 @@ importers:
       '@pekkah/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@x402/cardano':
+        specifier: 2.26.0
+        version: 2.26.0
+      '@x402/core':
+        specifier: 2.26.0
+        version: 2.26.0
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -309,6 +315,9 @@ importers:
       '@pekkah/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@pekkah/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@x402/cardano':
         specifier: 2.26.0
         version: 2.26.0

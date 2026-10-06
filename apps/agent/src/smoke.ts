@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { createBuyer } from "@pekkah/buyer";
+import { createBuyer, type PaymentExpectation } from "@pekkah/buyer";
 import {
   AssetId,
   CardanoAddress,
@@ -7,25 +7,33 @@ import {
   explorerTxUrl,
   formatAtomic,
   formatLovelace,
+  MASUMI_LOCK_LABEL,
+  NETWORK,
 } from "@pekkah/protocol";
 import { readEnv } from "@pekkah/runtime";
+import { decodeCardanoTransaction, masumiEscrowAddress } from "@x402/cardano";
+import { decodePaymentSignatureHeader } from "@x402/core/http";
 import { z } from "zod";
 
 // pnpm --filter @pekkah/agent smoke --seller B [--fail]
-// A real $0.01 tUSDM x402 payment through the market's dev smoke route (PR-02). With --fail the
-// route answers 500 after verify, so nothing may be charged.
+//   A real $0.01 tUSDM x402 payment through the market's dev smoke route (PR-02). With --fail
+//   the route answers 500 after verify, so nothing may be charged.
+// pnpm --filter @pekkah/agent smoke --escrow
+//   The Masumi feasibility gate (PR-02m): $0.01 locked in Masumi's escrow with worker A as
+//   seller. Locked, never released: release, refund and dispute tooling is my next step.
 
 const { values } = parseArgs({
   options: {
     seller: { type: "string" },
     fail: { type: "boolean", default: false },
+    escrow: { type: "boolean", default: false },
     market: { type: "string" },
   },
   strict: true,
 });
-const seller = values.seller?.toUpperCase();
+const seller = values.escrow ? "A" : values.seller?.toUpperCase();
 if (seller !== "A" && seller !== "B" && seller !== "C") {
-  console.error("usage: smoke --seller A|B|C [--fail] [--market <url>]");
+  console.error("usage: smoke --seller A|B|C [--fail] | smoke --escrow   [--market <url>]");
   process.exit(2);
 }
 
@@ -45,12 +53,13 @@ const env = readEnv("agent smoke", {
   SELLER_B_ADDRESS: CardanoAddress.optional(),
   SELLER_C_ADDRESS: CardanoAddress.optional(),
 });
-const payTo = env[`SELLER_${seller}_ADDRESS`];
-if (!payTo) {
+const sellerAddress = env[`SELLER_${seller}_ADDRESS`];
+if (!sellerAddress) {
   console.error(`agent smoke: env missing SELLER_${seller}_ADDRESS`);
   process.exit(1);
 }
 const market = (values.market ?? env.MARKET_URL).replace(/\/+$/, "");
+const escrow = masumiEscrowAddress(NETWORK);
 
 const buyer = (() => {
   try {
@@ -80,19 +89,26 @@ function createBuyerFromEnv() {
 
 const show = (b: { lovelace: string; assetAtomic: string }) =>
   `${formatAtomic(b.assetAtomic)} tUSDM, ${formatLovelace(b.lovelace)}`;
+const time = (posixMs: unknown) => new Date(Number(posixMs)).toISOString();
 
 console.log(`buyer      ${buyer.address}`);
-console.log(`seller ${seller}   ${payTo}`);
+console.log(`seller ${seller}   ${sellerAddress}`);
+if (values.escrow) console.log(`escrow     ${escrow}`);
 const before = await buyer.balance();
 console.log(`balance    ${show(before)}`);
 
-const url = `${market}/api/dev/smoke/${seller}${values.fail ? "?fail=1" : ""}`;
+const url = values.escrow
+  ? `${market}/api/dev/smoke-escrow`
+  : `${market}/api/dev/smoke/${seller}${values.fail ? "?fail=1" : ""}`;
+const expect: Omit<PaymentExpectation, "asset"> = values.escrow
+  ? { transferMethod: "masumi", payTo: escrow, seller: sellerAddress, amountAtomic: "10000" }
+  : { payTo: sellerAddress, amountAtomic: "10000" };
 console.log(`POST       ${url}`);
 const result = await buyer.buy({
   url,
   headers: { authorization: `Bearer ${env.DEMO_TOKEN}` },
   body: { note: "pekkah smoke", seller, at: new Date().toISOString() },
-  expect: { payTo, amountAtomic: "10000" },
+  expect,
   runId: `smoke-${Date.now()}`,
 });
 
@@ -108,6 +124,24 @@ if (result.refused) {
   );
 }
 console.log(`body       ${JSON.stringify(result.body)}`);
+
+if (values.escrow && result.accepted && result.paymentHeader) {
+  const terms = (result.accepted.extra.terms ?? {}) as Record<string, unknown>;
+  const tx = decodeCardanoTransaction(
+    String(decodePaymentSignatureHeader(result.paymentHeader).payload.transaction),
+  );
+  const lock = tx.outputs.find((o) => o.address === escrow);
+  console.log(`status     ${result.settle?.success ? MASUMI_LOCK_LABEL : "not locked"}`);
+  console.log(`seller     ${String(terms.sellerAddress)}`);
+  console.log(`inputHash  ${String(terms.inputHash)}`);
+  console.log(
+    `locked     ${formatAtomic(lock?.assets[env.PEKKAH_ASSET] ?? 0n)} tUSDM + ${formatLovelace(lock?.coin ?? 0n)} (collateral and minimum ADA), inline datum ${lock?.datum ? "present" : "missing"}`,
+  );
+  console.log(`payBy      ${time(terms.payByTime)}`);
+  console.log(`submit     ${time(terms.submitResultTime)}`);
+  console.log(`unlock     ${time(terms.unlockTime)}`);
+  console.log(`dispute    ${time(terms.externalDisputeUnlockTime)}`);
+}
 
 if (result.settle?.success && result.txHash) {
   await buyer.idle();

@@ -1,11 +1,17 @@
 import { MAX_TIMEOUT_SECONDS, NETWORK } from "@pekkah/protocol";
+import { jcs, masumiEscrowAddress } from "@x402/cardano";
 
 /** What the agent accepted: the offer, or for smoke tests the seller address and price. */
 export interface PaymentExpectation {
+  /** default: the worker's address. masumi: the escrow address (checked independently too). */
   payTo: string;
   amountAtomic: string;
   asset: string;
   transferMethod?: "default" | "masumi";
+  /** masumi: the worker that must be the seller in the signed terms. */
+  seller?: string;
+  /** masumi, when buying an offer: the request the agent quoted (the `parameters` part). */
+  parameters?: unknown;
 }
 
 /** The fields of a 402's selected requirements that the check reads. */
@@ -45,5 +51,36 @@ export function check402(req: RequirementsLike, expect: PaymentExpectation): str
       ? null
       : `payTo ${req.payTo} is not the accepted address ${expect.payTo}`;
   }
-  return `transfer method ${String(method)} is not supported yet`;
+  if (method === "masumi") return checkMasumi(req, expect);
+  return `transfer method ${String(method)} is not supported`;
+}
+
+interface CommitmentPart {
+  name?: unknown;
+  content?: unknown;
+}
+
+/**
+ * A Masumi 402 locks the funds at the escrow address with the worker as seller. The signer
+ * only checks that the commitment's digests are consistent, not that they describe my
+ * request, so the `parameters` part is compared with the request the agent quoted.
+ */
+function checkMasumi(req: RequirementsLike, expect: PaymentExpectation): string | null {
+  const escrow = masumiEscrowAddress(NETWORK);
+  if (req.payTo !== escrow) return `payTo ${req.payTo} is not the Masumi escrow ${escrow}`;
+  if (expect.payTo !== escrow) return `expected payTo ${expect.payTo} is not the Masumi escrow`;
+  if (!expect.seller) return "no expected seller for a Masumi payment";
+  const terms = req.extra?.terms as { sellerAddress?: unknown } | undefined;
+  if (terms?.sellerAddress !== expect.seller) {
+    return `escrow seller ${String(terms?.sellerAddress)} is not the expected worker ${expect.seller}`;
+  }
+  if (expect.parameters !== undefined) {
+    const commitment = req.extra?.inputCommitment as { parts?: CommitmentPart[] } | undefined;
+    const part = commitment?.parts?.find((p) => p.name === "parameters");
+    if (!part || part.content === undefined) return "the escrow does not commit to my request";
+    if (jcs(part.content) !== jcs(expect.parameters)) {
+      return "the escrow commits to a different request than the one I quoted";
+    }
+  }
+  return null;
 }
