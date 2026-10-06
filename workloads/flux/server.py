@@ -70,28 +70,33 @@ def load_pipeline():
 def render(prompt: str, seed: int, size: int, steps: int) -> bytes:
     pipe = state["pipe"]
     generator = torch.Generator("cpu").manual_seed(seed)
-    if MODEL == "flux":
-        # schnell is distilled for 1-4 steps without classifier-free guidance.
-        out = pipe(
-            prompt=prompt,
-            height=size,
-            width=size,
-            num_inference_steps=steps,
-            guidance_scale=0.0,
-            max_sequence_length=256,
-            generator=generator,
-        )
-    else:
-        out = pipe(
-            prompt=prompt,
-            height=size,
-            width=size,
-            num_inference_steps=SDXL_STEPS,
-            generator=generator,
-        )
-    buf = io.BytesIO()
-    out.images[0].save(buf, format="PNG")
-    return buf.getvalue()
+    try:
+        if MODEL == "flux":
+            # schnell is distilled for 1-4 steps without classifier-free guidance.
+            out = pipe(
+                prompt=prompt,
+                height=size,
+                width=size,
+                num_inference_steps=steps,
+                guidance_scale=0.0,
+                max_sequence_length=256,
+                generator=generator,
+            )
+        else:
+            out = pipe(
+                prompt=prompt,
+                height=size,
+                width=size,
+                num_inference_steps=SDXL_STEPS,
+                generator=generator,
+            )
+        buf = io.BytesIO()
+        out.images[0].save(buf, format="PNG")
+        return buf.getvalue()
+    finally:
+        # Hand the allocator's cached blocks back, so /health (and the worker's
+        # GPU stats) report what the model holds, not the last generation's peak.
+        torch.cuda.empty_cache()
 
 
 def vram_used_gb() -> float | None:
