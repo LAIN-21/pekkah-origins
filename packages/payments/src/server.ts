@@ -1,4 +1,5 @@
 import { MAX_TIMEOUT_SECONDS, NETWORK, type PaymentReceipt } from "@pekkah/protocol";
+import { assertMnemonic } from "@pekkah/runtime";
 import { masumiEscrowAddress, toMasumiSellerSigner } from "@x402/cardano";
 import {
   assertMasumiTemplate,
@@ -69,7 +70,14 @@ export function createResourceServer(options: ResourceServerOptions): x402Resour
  * seller named in the escrow terms must be the worker that address belongs to.
  */
 export function masumiSeller(mnemonic: string, expectedAddress: string): MasumiSellerSigner {
-  const seller = toMasumiSellerSigner({ mnemonic, network: NETWORK });
+  // Checked first: the wallet library would put an unknown word in its error message.
+  assertMnemonic("SELLER_A_MNEMONIC", mnemonic);
+  let seller: MasumiSellerSigner;
+  try {
+    seller = toMasumiSellerSigner({ mnemonic, network: NETWORK });
+  } catch {
+    throw new Error("could not derive the Masumi seller from SELLER_A_MNEMONIC");
+  }
   if (seller.sellerAddress !== expectedAddress) {
     throw new Error(
       `the Masumi seller key derives ${seller.sellerAddress}, not ${expectedAddress}`,

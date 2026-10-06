@@ -39,7 +39,8 @@ function loadMasumiSeller() {
   try {
     return masumiSeller(env.SELLER_A_MNEMONIC, env.SELLER_A_ADDRESS);
   } catch (err) {
-    log.error({ err }, "Masumi disabled: the seller key does not match SELLER_A_ADDRESS");
+    // The message names the variable and a position, never a word or a key.
+    log.error(`Masumi disabled: ${err instanceof Error ? err.message : "invalid seller key"}`);
     return undefined;
   }
 }
