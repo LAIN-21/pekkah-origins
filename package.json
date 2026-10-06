@@ -1,0 +1,23 @@
+{
+  "name": "pekkah-origins",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.9.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "biome check . && pnpm -r run typecheck && vitest run",
+    "test": "vitest run",
+    "dev": "pnpm --parallel --filter @pekkah/market --filter @pekkah/facilitator --filter @pekkah/worker run dev",
+    "format": "biome check --write .",
+    "secrets:scan": "bash scripts/secrets-scan.sh"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}
