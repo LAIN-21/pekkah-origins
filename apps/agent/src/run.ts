@@ -47,6 +47,10 @@ export interface SavedPayment {
 }
 
 const EXT: Record<string, string> = { "image/png": "png", "application/octet-stream": "bin" };
+/** Answers that mean the offer can no longer be bought; the market charged nothing. */
+const OFFER_GONE = new Set([404, 409, 410]);
+/** Quotes per run: one failover and one re-quote at most, so a run always ends. */
+const MAX_ATTEMPTS = 3;
 
 function savePayment(file: string, saved: SavedPayment, print: (line: string) => void): void {
   try {
@@ -129,6 +133,14 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
       excluded.push(offer.workerId);
       const reason = `${offer.workerId}'s job failed and its payment was cancelled: nothing was charged. Re-quoting without ${offer.workerId}.`;
       o.print(`reroute    ${reason}`);
+      await o.market.event("agent.reroute", { excluded: [...excluded], reason }, ids);
+      continue;
+    }
+    // The offer is gone (a market restart, an expiry, someone else bought it, the worker
+    // left). The market never took a payment for it, so ask again (PLAN 4.8).
+    if (OFFER_GONE.has(result.status) && attempt < MAX_ATTEMPTS) {
+      const reason = `The offer is no longer available (HTTP ${result.status}); nothing was charged. Re-quoting.`;
+      o.print(`requote    ${reason}`);
       await o.market.event("agent.reroute", { excluded: [...excluded], reason }, ids);
       continue;
     }
