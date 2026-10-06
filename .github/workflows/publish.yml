@@ -1,0 +1,100 @@
+name: publish
+
+# The worker kit's images (PLAN2 PR-17w), linux/amd64 only:
+#   ghcr.io/lain-21/pekkah-worker   the root Dockerfile's `worker` target
+#   ghcr.io/lain-21/pekkah-fractal  workloads/fractal
+# Tagged sha-<short> and latest. They publish only from main; a pull request only builds them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - apps/worker/**
+      - packages/**
+      - workloads/fractal/**
+      - .github/workflows/publish.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  # A newer push to main replaces a run still waiting, so latest is always the newest main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: pekkah-worker, context: ., target: worker }
+          - { name: pekkah-fractal, context: workloads/fractal, target: "" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          build-args: GIT_SHA=${{ github.sha }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.name }}
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # packages: write is for this job only; ci.yml keeps contents: read.
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: pekkah-worker, context: ., target: worker }
+          - { name: pekkah-fractal, context: workloads/fractal, target: "" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/lain-21/${{ matrix.name }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/LAIN-21/pekkah-origins
+            org.opencontainers.image.title=${{ matrix.name }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          build-args: GIT_SHA=${{ github.sha }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

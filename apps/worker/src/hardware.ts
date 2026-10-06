@@ -29,13 +29,19 @@ async function nvidiaSmi(query: string): Promise<string[] | null> {
   }
 }
 
-export async function detectGpu(): Promise<GpuInfo | undefined> {
-  const row = await nvidiaSmi("name,memory.total,driver_version");
+export const GPU_QUERY = "name,memory.total,driver_version";
+
+/** One `nvidia-smi --query-gpu=name,memory.total,driver_version` row (MiB, no units). */
+export function parseGpuRow(row: string[] | null | undefined): GpuInfo | undefined {
   if (!row) return undefined;
-  const [name, memField, driver] = row;
+  const [name, memField, driver] = row.map((s) => s.trim());
   const memMiB = smiNumber(memField);
   if (!name || memMiB === undefined || memMiB <= 0) return undefined;
   return { name, vramGb: round1(memMiB / 1024), driver: driver ?? "" };
+}
+
+export async function detectGpu(): Promise<GpuInfo | undefined> {
+  return parseGpuRow(await nvidiaSmi(GPU_QUERY));
 }
 
 /** Measured, not declared: the hardware a buyer's GPU and VRAM constraints are checked against. */
@@ -62,7 +68,7 @@ function cpuTimes() {
 }
 
 /** Machine-wide utilisation since the previous call, including the job containers. */
-export function utilSampler(hasGpu: boolean): () => Promise<WorkerUtil> {
+export function utilSampler(hasGpu: () => boolean): () => Promise<WorkerUtil> {
   let prev = cpuTimes();
   return async () => {
     const cur = cpuTimes();
@@ -70,7 +76,7 @@ export function utilSampler(hasGpu: boolean): () => Promise<WorkerUtil> {
     const cpuPct = total > 0 ? round1(100 * (1 - (cur.idle - prev.idle) / total)) : 0;
     prev = cur;
     const util: WorkerUtil = { cpuPct: Math.min(100, Math.max(0, cpuPct)) };
-    if (hasGpu) {
+    if (hasGpu()) {
       const row = await nvidiaSmi("utilization.gpu,memory.used");
       const gpuPct = smiNumber(row?.[0]);
       const usedMiB = smiNumber(row?.[1]);

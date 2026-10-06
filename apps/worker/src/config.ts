@@ -1,13 +1,14 @@
 import { CardanoAddress, WorkerId } from "@pekkah/protocol";
 import { readEnv } from "@pekkah/runtime";
 import { z } from "zod";
+import { HELLO_BOUNDS } from "./hello.js";
 
 const usd = z.coerce.number().positive().max(1);
 
 export function loadConfig() {
   return readEnv("worker", {
     WORKER_ID: WorkerId,
-    WORKER_NAME: z.string().min(1).max(64),
+    WORKER_NAME: z.string().min(1).max(HELLO_BOUNDS.name),
     WORKER_TOKEN: z.string().min(16),
     MARKET_WS_URL: z
       .string()
@@ -17,7 +18,7 @@ export function loadConfig() {
     PAYOUT_ADDRESS: CardanoAddress,
     PRICE_FRACTAL_USD: usd,
     PRICE_IMAGE_USD: usd.optional(),
-    SCHEDULE: z.string().optional(),
+    SCHEDULE: z.string().max(HELLO_BOUNDS.schedule).optional(),
     JOB_CPUS: z.coerce.number().positive().max(64).default(1),
     JOB_MEMORY: z
       .string()
