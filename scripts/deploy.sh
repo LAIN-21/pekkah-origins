@@ -212,8 +212,9 @@ if [ -z "\$($compose config --services)" ]; then
   echo "pekkah-\$project has no services yet; nothing to start"
 else
   echo "Building and starting pekkah-\$project"
+  # Same as up --build, but the build log stays quiet (errors still print).
   $compose build --quiet
-  $compose up -d --build --remove-orphans --quiet-pull
+  $compose up -d --remove-orphans --quiet-pull
 fi
 printf 'ref=%s\nsha=%s\ntime=%s\nepoch=%s\nsession=%s\n' "\$ref" "\$sha" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$(date +%s)" "\$session" > DEPLOYED
 REMOTE

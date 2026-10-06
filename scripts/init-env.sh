@@ -5,6 +5,7 @@
 #   scripts/init-env.sh                     names, defaults, generated tokens, __FILL_ME__ for secrets
 #   scripts/init-env.sh --seed-from-local   also copies values that ~/.pekkah/local.env already has
 #                                           (Blockfrost, mnemonics, seller addresses → PAYOUT_ADDRESS)
+#                                           into names that are missing, empty or __FILL_ME__
 #
 # Files: env/worker-a.env, env/worker-b.env, env/worker-c.env, env/flux.env,
 # env/market.env (from deploy/env-examples), and local.env (from the root
@@ -68,6 +69,26 @@ worker_tokens() {
   printf '%s' "$out"
 }
 
+# The local.env line for a seedable name (PAYOUT_ADDRESS comes from
+# SELLER_<id>_ADDRESS), or nothing. Raw, so quoting (mnemonics) is kept.
+seed_line() {
+  local name=$1 wid=$2 src=""
+  case "$SEEDABLE" in *" $name "*) src=$name ;; esac
+  [ "$name" != PAYOUT_ADDRESS ] || src="SELLER_${wid}_ADDRESS"
+  [ -n "$src" ] || return 0
+  is_real "$(get_value "$LOCAL_ENV" "$src")" || return 0
+  printf '%s=%s' "$name" "$(sed -n "s/^$src=//p" "$LOCAL_ENV" | tail -1)"
+}
+
+# replace_line <file> <name> <new line>: the value travels through the environment, never argv.
+replace_line() {
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX")
+  NEW_LINE=$3 awk -v n="$2=" 'index($0, n) == 1 { print ENVIRON["NEW_LINE"]; next } { print }' "$1" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$1"
+}
+
 # process <template> <target>
 process() {
   local tpl=$1 target=$2 generate optional line name default value worker_id
@@ -88,7 +109,17 @@ process() {
       name=${line%%=*}
       default=${line#*=}
       if [ "$name" = WORKER_TOKENS ]; then [ $pass -eq 2 ] || continue; else [ $pass -eq 1 ] || continue; fi
-      has_name "$target" "$name" && continue
+      if has_name "$target" "$name"; then
+        # A placeholder or an empty value isn't a value: --seed-from-local may fill it.
+        if [ $seed -eq 1 ] && [ "$target" != "$LOCAL_ENV" ] && ! is_real "$(get_value "$target" "$name")"; then
+          value=$(seed_line "$name" "$worker_id")
+          if [ -n "$value" ]; then
+            replace_line "$target" "$name" "$value"
+            seeded="$seeded $name"
+          fi
+        fi
+        continue
+      fi
 
       value=""
       case "$generate" in *" $name "*)
@@ -117,14 +148,8 @@ process() {
         [ -z "$value" ] || derived="$derived $name"
       fi
       if [ -z "$value" ] && [ $seed -eq 1 ] && [ "$target" != "$LOCAL_ENV" ]; then
-        src=""
-        case "$SEEDABLE" in *" $name "*) src=$name ;; esac
-        [ "$name" != PAYOUT_ADDRESS ] || src="SELLER_${worker_id}_ADDRESS"
-        if [ -n "$src" ] && is_real "$(get_value "$LOCAL_ENV" "$src")"; then
-          # Copy the raw line so quoting (mnemonics) is kept.
-          value="$name=$(sed -n "s/^$src=//p" "$LOCAL_ENV" | tail -1)"
-          seeded="$seeded $name"
-        fi
+        value=$(seed_line "$name" "$worker_id")
+        [ -z "$value" ] || seeded="$seeded $name"
       fi
       if [ -z "$value" ] && [ "$target" = "$LOCAL_ENV" ] && [ -z "$default" ]; then
         case "$LOCAL_SECRETS" in
@@ -157,10 +182,11 @@ process() {
   done
 
   local label=${target#"$PEKKAH_HOME"/}
-  if [ -z "$added" ]; then
+  if [ -z "$added$seeded" ]; then
     echo "$label: complete, nothing added"
   else
-    echo "$label: added$added"
+    [ -z "$added" ] || echo "$label: added$added"
+    [ -n "$added" ] || echo "$label:"
     [ -z "$generated" ] || echo "    generated:$generated"
     [ -z "$derived" ] || echo "    derived:$derived"
     [ -z "$seeded" ] || echo "    copied from local.env:$seeded"
