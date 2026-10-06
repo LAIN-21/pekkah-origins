@@ -26,7 +26,7 @@ Pekkah is a market for that. Machines sell compute per job. Agents buy per job w
 
 **A sandbox for every job.** Workers run whitelisted workloads only, with validated parameters. Each CPU job runs in a fresh container with no network, a read-only file system, no capabilities, a non-root user, and memory, CPU and process limits, and the worker kills it 10 s after its deadline. Image jobs go to one warm FLUX container on worker A that only the worker can reach, over an internal Docker network.
 
-**Masumi escrow.** What is real today: when my agent buys through the escrow route, its payment is locked in Masumi's `vested_pay` V2 contract on preprod, after the job delivers. The lock names worker A as the seller. It commits to the exact request my agent quoted: the request's hash is in the seller-signed terms and in the lock's inline datum. Four deadlines are set: pay by, submit result, unlock and dispute. The same x402 client and facilitator handle it, and nothing about the job flow changes. What is next: the worker submits its result hash, collects after the unlock time, and the buyer can ask for a refund or open a dispute. Until I build that tooling, my test locks stay locked.
+**Masumi escrow.** What is real today: when my agent buys through the escrow route, its payment is locked in Masumi's `vested_pay` V2 contract on preprod, after the job delivers. The lock names worker A as the seller. It commits to the exact request my agent quoted: the request's hash is in the seller-signed terms and in the lock's inline datum. Four deadlines are set: pay by, submit result, unlock and dispute. The same x402 client and facilitator handle it, and nothing about the job flow changes. Once the lock lands, the market also submits the delivered result's sha256 into the escrow as the seller (Masumi's `SubmitResult`), with Seller A's key, which it already holds to sign the terms. The datum then reads `ResultSubmitted`. Every such transaction is evaluated against the real validator before it is sent. What is next: the worker collects after the unlock time, and the buyer can ask for a refund or open a dispute. Until I build that tooling, my test locks stay locked.
 
 ## Deploy and scale
 
@@ -42,7 +42,7 @@ To scale:
 ## Next steps
 
 - Prepaid deposits with batched settlement for small jobs. No credit for anonymous agents.
-- Masumi release, refund and dispute: the worker submits the result hash and collects after the unlock time, and the buyer can get a refund or open a dispute.
+- Masumi release, refund and dispute: the worker collects after the unlock time (its result hash is already on chain), and the buyer can get a refund or open a dispute.
 - Open registration, with recomputation checks: random calibration views, and sampled pixels of real jobs recomputed by the market.
 - Distributed jobs: one large render split across several workers.
 - Worker-signed escrow terms: today the market holds Seller A's key to sign the terms. Next, the worker signs them itself over its WebSocket.
