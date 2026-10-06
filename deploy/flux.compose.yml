@@ -1,9 +1,69 @@
 # Compose project pekkah-flux, on the GPU droplet only. It is separate from
 # pekkah-worker, so a worker redeploy never removes the warm flux server.
-# pekkah-jobs is an internal network (no internet) created once by deploy.sh.
-# Stub: PR-07a adds the flux and flux-fetch services.
+#   scripts/deploy.sh flux                     builds and starts flux
+#   docker compose -p pekkah-flux ... --profile fetch run --rm flux-fetch
+# pekkah-jobs is an internal network (no internet) created once by deploy.sh;
+# the worker on A joins it and reaches this server at http://flux:8000.
 
-services: {}
+x-build: &build
+  context: ../workloads/flux
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  flux:
+    build: *build
+    image: pekkah/flux:local
+    restart: unless-stopped
+    environment:
+      FLUX_MODEL: ${FLUX_MODEL:-flux}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      MODELS_DIR: ${MODELS_DIR:-/models}
+    volumes:
+      - /var/lib/pekkah/hf:/models:ro
+    networks:
+      - pekkah-jobs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,sys,urllib.request; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)).get('ready') else 1)"
+      interval: 15s
+      timeout: 5s
+      start_period: 600s
+      retries: 3
+    logging: *logging
+
+  # One-off weight download, the only flux container with internet access and
+  # the only one that gets HF_TOKEN. Runs as root because it writes /models.
+  flux-fetch:
+    profiles: [fetch]
+    build: *build
+    image: pekkah/flux:local
+    user: "0:0"
+    command: ["python", "fetch_weights.py"]
+    environment:
+      FLUX_MODEL: ${FLUX_MODEL:-flux}
+      MODELS_DIR: /models
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    volumes:
+      - /var/lib/pekkah/hf:/models
+    networks:
+      - default
+    logging: *logging
 
 networks:
   pekkah-jobs:
