@@ -120,10 +120,27 @@ export class WorkerRegistry {
   private readonly workers = new Map<string, WorkerEntry>();
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
   private readonly silentMs: number;
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly o: WorkerRegistryOptions) {
     this.silentMs = o.silentMs ?? WORKER_SILENT_MS;
     this.wss.on("connection", (socket) => this.accept(socket));
+  }
+
+  /** Called after anything a snapshot shows changes; returns the unsubscribe function. */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private changed(): void {
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (err) {
+        this.o.log.error({ err }, "worker change listener failed");
+      }
+    }
   }
 
   attach(server: Server): void {
@@ -251,6 +268,7 @@ export class WorkerRegistry {
       data: { workerId: entry.workerId, name: entry.name },
     });
     for (const workload of entry.warm) this.requestCalibration(entry, workload);
+    this.changed();
     return entry;
   }
 
@@ -272,6 +290,7 @@ export class WorkerRegistry {
     entry.busy = false;
     entry.currentJobId = undefined;
     this.failPending(entry, "worker disconnected");
+    this.changed();
     this.o.log.info({ workerId: entry.workerId, reason }, "worker offline");
     this.o.bus.emit({
       source: "market",
@@ -296,6 +315,7 @@ export class WorkerRegistry {
         entry.currentJobId = msg.currentJobId;
         entry.warm = [...msg.warm];
         for (const workload of entry.warm) this.requestCalibration(entry, workload);
+        this.changed();
         return;
       }
       case "job.accepted": {
@@ -363,6 +383,7 @@ export class WorkerRegistry {
     if (!job || job.jobId !== outcome.jobId) return;
     entry.pending = null;
     clearTimeout(job.timer);
+    this.changed();
     if (!job.request.quiet) {
       if (outcome.ok) {
         this.emitJob(job, "job.completed", {
@@ -419,6 +440,7 @@ export class WorkerRegistry {
         ),
       };
       entry.pending = job;
+      this.changed();
       if (!request.quiet) {
         this.emitJob(job, "job.dispatched" as never, {
           workerId,
@@ -447,12 +469,16 @@ export class WorkerRegistry {
 
   beginCalibration(workerId: string): void {
     const entry = this.workers.get(workerId);
-    if (entry) entry.calibrating += 1;
+    if (!entry) return;
+    entry.calibrating += 1;
+    this.changed();
   }
 
   endCalibration(workerId: string): void {
     const entry = this.workers.get(workerId);
-    if (entry) entry.calibrating = Math.max(0, entry.calibrating - 1);
+    if (!entry) return;
+    entry.calibrating = Math.max(0, entry.calibrating - 1);
+    this.changed();
   }
 
   setCalibration(workerId: string, update: Partial<Calibration>, trusted = true): void {
@@ -460,6 +486,7 @@ export class WorkerRegistry {
     if (!entry) return;
     entry.calibration = { ...entry.calibration, ...update };
     if (!trusted) entry.untrusted = true;
+    this.changed();
   }
 
   isConnected(workerId: string): boolean {

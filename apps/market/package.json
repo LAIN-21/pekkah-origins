@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@pekkah/matcher": "workspace:*",
     "@pekkah/payments": "workspace:*",
     "@pekkah/protocol": "workspace:*",
     "@pekkah/runtime": "workspace:*",

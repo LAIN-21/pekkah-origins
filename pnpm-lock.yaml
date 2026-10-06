@@ -239,6 +239,9 @@ importers:
 
   apps/market:
     dependencies:
+      '@pekkah/matcher':
+        specifier: workspace:*
+        version: link:../../packages/matcher
       '@pekkah/payments':
         specifier: workspace:*
         version: link:../../packages/payments
