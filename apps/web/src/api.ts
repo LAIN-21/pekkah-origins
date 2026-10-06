@@ -8,6 +8,14 @@ export async function fetchLatestRun(): Promise<RunLog | null> {
   return parsed.success ? parsed.data : null;
 }
 
+/** GET /api/runs/:runId/events: one run, live or finished (the market keeps the last 30). */
+export async function fetchRun(runId: string): Promise<RunLog | null> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/events`);
+  if (!res.ok) return null;
+  const parsed = RunLog.safeParse(await res.json());
+  return parsed.success ? parsed.data : null;
+}
+
 export type DemoRunResult =
   | { ok: true; runId: string }
   | { ok: false; status: number; message: string };

@@ -1,6 +1,7 @@
 import {
   type DemoState,
   IMAGE_PROMPTS,
+  type JobEvent,
   PUBLIC_SCENARIOS,
   type PublicScenario,
   SCENARIOS,
@@ -8,16 +9,21 @@ import {
 import { useState } from "react";
 import type { DemoRunResult } from "../api";
 import { useNow } from "../hooks";
+import { busyRunId } from "../run";
 import type { Connection } from "../store";
 
 interface Props {
   demo: DemoState | null;
   connection: Connection;
+  /** Every event seen: another run under way (Claude's, say) blocks the buttons too. */
+  events: readonly JobEvent[];
   onStart: (scenario: PublicScenario, promptIndex?: number) => Promise<DemoRunResult>;
 }
 
-export function RunPanel({ demo, connection, onStart }: Props) {
+export function RunPanel({ demo, connection, events, onStart }: Props) {
   const now = useNow(1000);
+  // The server's 409 rule: an unfinished run with an event in the last 2 minutes.
+  const busy = Boolean(demo?.running) || busyRunId(events, now) !== undefined;
   const [promptIndex, setPromptIndex] = useState(0);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -28,15 +34,15 @@ export function RunPanel({ demo, connection, onStart }: Props) {
   const blocked =
     connection !== "open" ||
     !demo ||
-    demo.running ||
+    busy ||
     cooldownLeft > 0 ||
     demo.runsLeftToday === 0 ||
     pending;
 
   const status = !demo
     ? "Waiting for the market…"
-    : demo.running
-      ? "A run is in progress. Watch it below."
+    : busy
+      ? "A run is in progress. Watch it on this page."
       : cooldownLeft > 0
         ? `Next run in ${Math.floor(cooldownLeft / 60)}:${String(cooldownLeft % 60).padStart(2, "0")}`
         : demo.runsLeftToday === 0

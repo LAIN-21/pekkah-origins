@@ -1,4 +1,10 @@
-import { ASSET_SYMBOL, formatAtomic, formatLovelace, formatUsd } from "@pekkah/protocol";
+import {
+  ASSET_SYMBOL,
+  type ComputeRequest,
+  formatAtomic,
+  formatLovelace,
+  formatUsd,
+} from "@pekkah/protocol";
 
 export { formatLovelace, formatUsd };
 
@@ -44,10 +50,11 @@ export function formatClockSeconds(iso: string): string {
   });
 }
 
-/** Seconds from `fromIso` to `toIso`, e.g. "+12.4 s". */
+/** Time from `fromIso` to `toIso`: "+12.4 s", or "+33:07" from 100 s on (an escrow's release). */
 export function formatElapsed(fromIso: string, toIso: string): string {
   const sec = Math.max(0, (Date.parse(toIso) - Date.parse(fromIso)) / 1000);
-  return `+${sec.toFixed(1)} s`;
+  if (sec < 100) return `+${sec.toFixed(1)} s`;
+  return `+${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
 }
 
 /** POSIX milliseconds (Masumi terms) → local date and time. */
@@ -58,4 +65,23 @@ export function formatPosixMs(ms: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** What a request asks for, in a few words: "An image: “a lighthouse at dusk”". */
+export function requestWhat(r: ComputeRequest): string {
+  return r.workload === "image"
+    ? `An image: “${r.params.prompt}”`
+    : `A CPU render (preset ${r.params.preset})`;
+}
+
+/** A request's terms on one line: size, hardware, deadline and budget. */
+export function requestLine(r: ComputeRequest): string {
+  const parts: string[] = [];
+  if (r.workload === "image") parts.push(`${r.params.size}², ${r.params.steps} steps`);
+  if (r.constraints.gpu)
+    parts.push(`GPU${r.constraints.minVramGb ? ` ≥ ${r.constraints.minVramGb} GB` : ""}`);
+  parts.push(`deadline ${r.constraints.deadlineSec} s`);
+  parts.push(`budget ${formatUsd(r.budget.maxUsd)}`);
+  if (r.constraints.exclude?.length) parts.push(`not ${r.constraints.exclude.join(", ")}`);
+  return parts.join(" · ");
 }

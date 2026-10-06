@@ -24,6 +24,10 @@ export interface Attempt {
   paymentFailed?: EventOf<"payment.failed">;
   receipt?: EventOf<"receipt.issued">;
   escrow?: EventOf<"escrow.locked">;
+  /** The escrow's later steps, matched to the lock by its tx hash. */
+  resultSubmitted?: EventOf<"escrow.result_submitted">;
+  released?: EventOf<"escrow.released">;
+  refunded?: EventOf<"escrow.refunded">;
 }
 
 export type RunStatus = "running" | "completed" | "failed";
@@ -32,6 +36,8 @@ export interface RunView {
   runId: string;
   /** Unset for a free-form run (scenario "custom", from the MCP or the CLI). */
   scenario?: ScenarioName;
+  /** Who started the run, as run.started says, e.g. "Claude via MCP". */
+  client?: string;
   started?: EventOf<"run.started">;
   quotes: EventOf<"quote.issued">[];
   decisions: EventOf<"agent.decision">[];
@@ -120,6 +126,7 @@ export function deriveRun(runId: string, all: readonly JobEvent[]): RunView {
       case "run.started":
         view.started = e;
         view.scenario = knownScenario(e.data.scenario);
+        view.client = e.data.client;
         break;
       case "quote.issued":
         view.quotes.push(e);
@@ -188,6 +195,22 @@ export function deriveRun(runId: string, all: readonly JobEvent[]): RunView {
       case "escrow.locked": {
         const a = byTx.get(e.data.txHash) ?? last();
         a.escrow = e;
+        break;
+      }
+      // The lock is the payment's transaction, so its hash finds the attempt.
+      case "escrow.result_submitted": {
+        const a = byTx.get(e.data.lockTxHash) ?? last();
+        a.resultSubmitted = e;
+        break;
+      }
+      case "escrow.released": {
+        const a = byTx.get(e.data.lockTxHash) ?? last();
+        a.released = e;
+        break;
+      }
+      case "escrow.refunded": {
+        const a = byTx.get(e.data.lockTxHash) ?? last();
+        a.refunded = e;
         break;
       }
       case "run.completed":
@@ -261,11 +284,104 @@ export function isEscrow(a: Attempt): boolean {
   );
 }
 
-/** The latest agent.balance event, from any run. */
-export function latestBalance(events: readonly JobEvent[]): EventOf<"agent.balance"> | undefined {
-  let found: EventOf<"agent.balance"> | undefined;
+/**
+ * My agent's latest balance: from the given run when it reported one (the hosted agent and the
+ * MCP pay from different accounts), else from any run.
+ */
+export function latestBalance(
+  events: readonly JobEvent[],
+  runId?: string,
+): EventOf<"agent.balance"> | undefined {
+  let any: EventOf<"agent.balance"> | undefined;
+  let ofRun: EventOf<"agent.balance"> | undefined;
   for (const e of events) {
-    if (e.type === "agent.balance" && (!found || e.id > found.id)) found = e;
+    if (e.type !== "agent.balance") continue;
+    if (!any || e.id > any.id) any = e;
+    if (runId && e.runId === runId && (!ofRun || e.id > ofRun.id)) ofRun = e;
   }
-  return found;
+  return ofRun ?? any;
+}
+
+/** The parts of the story, in page order. Each panel carries its step as data-step. */
+export const STORY_STEPS = ["request", "decision", "payment", "result", "escrow"] as const;
+export type StoryStep = (typeof STORY_STEPS)[number];
+
+const STEP_OF: Partial<Record<JobEvent["type"], StoryStep>> = {
+  "run.started": "request",
+  "quote.issued": "decision",
+  "agent.decision": "decision",
+  "agent.reroute": "decision",
+  "payment.required": "payment",
+  "payment.signed": "payment",
+  "payment.verified": "payment",
+  "job.dispatched": "payment",
+  "job.running": "payment",
+  "job.progress": "payment",
+  "job.completed": "payment",
+  "job.failed": "payment",
+  "payment.settling": "payment",
+  "payment.settled": "payment",
+  "payment.canceled": "payment",
+  "payment.failed": "payment",
+  // The lock is how an escrow run pays, so it stays with the payment until the receipt.
+  "escrow.locked": "payment",
+  "receipt.issued": "result",
+  "escrow.result_submitted": "escrow",
+  "escrow.released": "escrow",
+  "escrow.refunded": "escrow",
+};
+
+/**
+ * The part of the story the newest event belongs to. Events that don't move the story (the
+ * balance, the run's end) keep the step where it was.
+ */
+export function currentStep(run: Pick<RunView, "events">): StoryStep | undefined {
+  for (let i = run.events.length - 1; i >= 0; i--) {
+    const step = STEP_OF[run.events[i]?.type as JobEvent["type"]];
+    if (step) return step;
+  }
+  return undefined;
+}
+
+/** A run opened mid-way counts as live while unfinished with an event this recent. */
+export const LIVE_WINDOW_MS = 15 * 60_000;
+/** The server refuses a new run (409) while another is unfinished with an event this recent. */
+export const BUSY_WINDOW_MS = 2 * 60_000;
+
+/** Unfinished: started, with no run.completed or run.failed yet. */
+export function isUnfinished(run: Pick<RunView, "started" | "status">): boolean {
+  return Boolean(run.started) && run.status === "running";
+}
+
+/** An unfinished run whose last event is within `windowMs` of `now`. */
+export function isRecentUnfinished(
+  run: Pick<RunView, "started" | "status" | "lastTs">,
+  now: number,
+  windowMs: number,
+): boolean {
+  return isUnfinished(run) && run.lastTs !== undefined && now - Date.parse(run.lastTs) < windowMs;
+}
+
+/**
+ * The run that blocks the run buttons, by the server's 409 rule: started, not finished, with an
+ * event in the last 2 minutes. Only runs whose start is in view count.
+ */
+export function busyRunId(events: readonly JobEvent[], now: number): string | undefined {
+  const runs = new Map<string, { ended: boolean; last: number }>();
+  for (const e of events) {
+    if (!e.runId || e.dev) continue;
+    const t = Date.parse(e.ts);
+    const r = runs.get(e.runId);
+    if (e.type === "run.started") {
+      runs.set(e.runId, { ended: r?.ended ?? false, last: Math.max(r?.last ?? 0, t) });
+      continue;
+    }
+    if (!r) continue;
+    if (e.type === "run.completed" || e.type === "run.failed") r.ended = true;
+    r.last = Math.max(r.last, t);
+  }
+  for (const [runId, r] of runs) {
+    if (!r.ended && now - r.last < BUSY_WINDOW_MS) return runId;
+  }
+  return undefined;
 }

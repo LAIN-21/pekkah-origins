@@ -13,12 +13,15 @@ export interface FeedState {
   liveRunIds: string[];
   /** The last real run, fetched for the replay when the page opened idle. */
   replay: RunLog | null;
+  /** The run ?run= asked for: loaded, missing, or not asked for. */
+  pinned: RunLog | "missing" | null;
 }
 
 export type FeedAction =
   | { type: "connection"; connection: Connection }
   | { type: "message"; message: UiMessage }
-  | { type: "replay"; log: RunLog };
+  | { type: "replay"; log: RunLog }
+  | { type: "pinned"; log: RunLog | "missing" };
 
 export const initialFeed: FeedState = {
   connection: "connecting",
@@ -27,6 +30,7 @@ export const initialFeed: FeedState = {
   events: [],
   liveRunIds: [],
   replay: null,
+  pinned: null,
 };
 
 /** Enough for many runs; older events drop off. */
@@ -47,6 +51,8 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
       return { ...state, connection: action.connection };
     case "replay":
       return { ...state, replay: action.log };
+    case "pinned":
+      return { ...state, pinned: action.log };
     case "message": {
       const m = action.message;
       switch (m.type) {

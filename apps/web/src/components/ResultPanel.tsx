@@ -1,8 +1,7 @@
-import { ASSET_SYMBOL, explorerAddressUrl, MASUMI_LOCK_LABEL } from "@pekkah/protocol";
+import { ASSET_SYMBOL, explorerAddressUrl } from "@pekkah/protocol";
 import { useState } from "react";
 import { formatAsset, formatClockSeconds, formatLovelace, formatMs, short } from "../format";
 import { type Attempt, isEscrow, type RunView } from "../run";
-import { EscrowCard } from "./EscrowCard";
 
 /** The attempt that delivered and has a receipt (the last one in a failover). */
 function paidAttempt(run: RunView): Attempt | undefined {
@@ -46,6 +45,9 @@ export function ResultPanel({ run, name }: { run: RunView; name: (workerId: stri
         <p className="small muted">
           Made by {name(completed.workerId)} in {formatMs(completed.durationMs)} · sha256{" "}
           {short(completed.sha256, 10, 6)}
+          {completed.check
+            ? ` · checked by the market: a PNG, ${completed.check.width}×${completed.check.height} ✓`
+            : ""}
         </p>
       ) : null}
     </div>
@@ -73,7 +75,13 @@ export function ReceiptPanel({ run, name }: { run: RunView; name: (workerId: str
         <dt>{escrow ? "Status" : "Paid to"}</dt>
         <dd>
           {escrow ? (
-            `Locked in escrow · seller: ${worker}`
+            a.released ? (
+              `Released to ${worker} after the unlock`
+            ) : a.refunded ? (
+              "Refunded to the buyer"
+            ) : (
+              `Locked in escrow · seller: ${worker}`
+            )
           ) : (
             <>
               {worker},{" "}
@@ -109,11 +117,6 @@ export function ReceiptPanel({ run, name }: { run: RunView; name: (workerId: str
         <dt>{escrow ? "Locked at" : "Settled at"}</dt>
         <dd>{formatClockSeconds(r.settledAt)}</dd>
       </dl>
-      {a.escrow ? (
-        <EscrowCard lock={a.escrow} seller={worker} />
-      ) : escrow ? (
-        <p className="small">{MASUMI_LOCK_LABEL}</p>
-      ) : null}
     </div>
   );
 }

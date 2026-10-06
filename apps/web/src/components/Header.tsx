@@ -5,6 +5,8 @@ import type { Connection } from "../store";
 export type ViewMode =
   | { kind: "live"; running: boolean; at?: string }
   | { kind: "replay"; at: string }
+  /** A finished run opened with ?run=. */
+  | { kind: "pinned"; at: string }
   | { kind: "idle" };
 
 interface Props {
@@ -64,6 +66,9 @@ function ModeChip({ mode }: { mode: ViewMode }) {
   }
   if (mode.kind === "replay") {
     return <span className="chip info">Replay of a real run at {formatClock(mode.at)}</span>;
+  }
+  if (mode.kind === "pinned") {
+    return <span className="chip info">A real run from {formatClock(mode.at)}</span>;
   }
   return <span className="chip">No run yet</span>;
 }

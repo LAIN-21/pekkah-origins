@@ -447,7 +447,34 @@ button.link {
   color: var(--red);
 }
 
-/* timeline */
+/* the log: its own scroll box, following the newest row (PR-15) */
+.log-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 12px;
+}
+.log-box {
+  max-height: 380px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.log-box:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.log-jump {
+  align-self: center;
+  margin-top: 8px;
+  background: var(--blue);
+  color: #0b0f19;
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
 .timeline {
   list-style: none;
   padding: 0;
@@ -460,6 +487,13 @@ button.link {
   padding: 6px 0;
   border-top: 1px solid var(--line);
   font-size: 0.82rem;
+  animation: tl-in 0.35s ease-out;
+}
+@keyframes tl-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 .tl-time {
   color: var(--muted);
@@ -527,34 +561,242 @@ button.link {
   padding: 8px 16px 24px;
 }
 
-/* escrow card (PR-08m) */
-.escrow {
-  border-top: 1px solid var(--line);
-  margin-top: 10px;
-  padding-top: 6px;
-}
+/* escrow card */
 .escrow-label {
   color: var(--amber);
   font-size: 0.85rem;
 }
-.escrow dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
-  margin: 0;
-  font-size: 0.85rem;
-}
-.escrow dt {
-  color: var(--muted);
-}
-.escrow dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.escrow .deadline {
-  display: contents;
-}
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.8rem;
+}
+
+/* the story's current step, while following live (PR-15) */
+.step:empty {
+  display: none;
+}
+.step > .card {
+  transition:
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+.step.current > .card {
+  border-color: var(--blue);
+  box-shadow:
+    0 0 0 1px var(--blue),
+    0 0 28px rgba(91, 140, 255, 0.22);
+}
+.step + .step {
+  margin-top: 0;
+}
+.story > .step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.story-head {
+  margin-bottom: 12px;
+}
+.story-head h2 {
+  margin-bottom: 0;
+}
+.chip.follow {
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+}
+.chip.follow.on {
+  color: var(--blue);
+  border-color: rgba(91, 140, 255, 0.5);
+}
+.request-what {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.statement {
+  border-left: 3px solid var(--amber);
+  padding-left: 8px;
+  margin: 6px 0 0;
+  color: var(--amber);
+}
+
+/* a live or pinned run: the story first and widest, tuned for 1280x800 (PR-15) */
+.layout.story-first {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+.layout.story-first .side {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  height: calc(100vh - 110px);
+  min-height: 420px;
+  gap: 12px;
+}
+.layout.story-first .side .log-card {
+  flex: 1;
+  margin-top: 0;
+}
+.layout.story-first .side .log-box {
+  flex: 1;
+  max-height: none;
+}
+.layout.story-first .result {
+  max-width: 400px;
+}
+@media (max-width: 960px) {
+  .layout.story-first {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .layout.story-first .side {
+    position: static;
+    height: auto;
+    min-height: 0;
+  }
+  .layout.story-first .side .log-box {
+    max-height: 360px;
+  }
+}
+
+/* the market, compact, beside a live run */
+.strip h3 {
+  margin-bottom: 6px;
+}
+.strip-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.8rem;
+}
+.strip-list li {
+  display: grid;
+  grid-template-columns: 72px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+.strip-list li.offline {
+  opacity: 0.55;
+}
+.strip-hw {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.strip-util {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* reported vs measured, the escrow seller, probation workers */
+.label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.measured li.label {
+  margin-bottom: 2px;
+}
+.escrow-chip {
+  margin: 6px 0 0;
+}
+.joining {
+  margin-top: 16px;
+}
+.joining .worker {
+  border-style: dashed;
+}
+
+/* the escrow, step by step (PR-15) */
+.lifecycle {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  counter-reset: lc;
+}
+.lifecycle li {
+  counter-increment: lc;
+  position: relative;
+  padding: 6px 0 6px 30px;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+}
+.lifecycle li::before {
+  content: counter(lc);
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.72rem;
+  display: grid;
+  place-items: center;
+}
+.lifecycle li.done::before {
+  content: "✓";
+  background: var(--mint);
+  border-color: var(--mint);
+  color: #06281c;
+}
+.lifecycle li.active::before {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.lifecycle li.pending {
+  color: var(--muted);
+}
+.lc-title {
+  font-weight: 600;
+}
+.lc-detail {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.countdown {
+  font-variant-numeric: tabular-nums;
+  color: var(--blue);
+  font-weight: 600;
+}
+.escrow-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 4px 0;
+}
+.escrow-details dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+}
+.escrow-details dt {
+  color: var(--muted);
+}
+.escrow-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.escrow-details .deadline {
+  display: contents;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl,
+  .chip.live .dot {
+    animation: none;
+  }
+  .step > .card,
+  .bar-fill,
+  .progress span {
+    transition: none;
+  }
 }

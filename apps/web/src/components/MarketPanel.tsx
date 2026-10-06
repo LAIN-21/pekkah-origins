@@ -16,19 +16,79 @@ const STATUS: Record<WorkerSnapshot["status"], { text: string; tone: string }> =
   untrusted: { text: "failed its check", tone: "bad" },
 };
 
+/** A worker the market sells. Before PR-13 the market didn't send `selling`: all of them sold. */
+export function isSelling(w: WorkerSnapshot): boolean {
+  return w.selling !== false;
+}
+
 export function MarketPanel({ workers }: { workers: WorkerSnapshot[] }) {
+  const selling = workers.filter(isSelling);
+  const joining = workers.filter((w) => !isSelling(w));
   return (
     <section className="panel" aria-labelledby="market-title">
       <h2 id="market-title">Who sells</h2>
-      {workers.length === 0 ? (
+      {selling.length === 0 ? (
         <p className="muted">No worker has connected yet.</p>
       ) : (
         <div className="workers">
-          {workers.map((w) => (
+          {selling.map((w) => (
             <WorkerCard key={w.workerId} worker={w} />
           ))}
         </div>
       )}
+      {joining.length > 0 ? (
+        <div className="joining">
+          <h3>Joining the network</h3>
+          <p className="small muted">
+            On probation: listed and measured, but they sell nothing until I allowlist them.
+          </p>
+          <div className="workers">
+            {joining.map((w) => (
+              <WorkerCard key={w.workerId} worker={w} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function hardwareShort(w: WorkerSnapshot): string {
+  const gpu = w.hardware.gpu;
+  return gpu
+    ? `${gpu.name.replace(/^NVIDIA /, "")}, ${gpu.vramGb} GB`
+    : `${w.hardware.vcpus} vCPU, ${w.hardware.memGb} GB RAM`;
+}
+
+/** The market in a few lines, beside a live run. */
+export function MarketStrip({ workers }: { workers: WorkerSnapshot[] }) {
+  const selling = workers.filter(isSelling);
+  const joining = workers.length - selling.length;
+  return (
+    <section className="card strip" aria-label="Who sells">
+      <h3>Who sells</h3>
+      {selling.length === 0 ? <p className="small muted">No worker has connected yet.</p> : null}
+      <ul className="strip-list">
+        {selling.map((w) => {
+          const status = STATUS[w.status];
+          const busy = w.util?.gpuPct ?? w.util?.cpuPct;
+          return (
+            <li key={w.workerId} className={w.status}>
+              <span className="strip-name">{w.name}</span>
+              <span className="strip-hw">{hardwareShort(w)}</span>
+              <span className={`chip tiny ${status.tone}`}>{status.text}</span>
+              {busy !== undefined ? (
+                <span className="strip-util">
+                  {w.util?.gpuPct !== undefined ? "GPU" : "CPU"} {Math.round(busy)}%
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {joining > 0 ? (
+        <p className="small muted">{joining} joining on probation, not selling.</p>
+      ) : null}
     </section>
   );
 }
@@ -39,13 +99,18 @@ function WorkerCard({ worker: w }: { worker: WorkerSnapshot }) {
   return (
     <article className={`card worker ${w.status}`}>
       <div className="row between">
-        <h3>{w.name}</h3>
+        {/* A probation worker goes by the market's display id, never a name it sent. */}
+        <h3>{isSelling(w) ? w.name : w.workerId}</h3>
         <span className={`chip ${status.tone}`}>
           <span className="dot" />
           {status.text}
         </span>
       </div>
+      {w.escrowSeller ? (
+        <span className="chip tiny info escrow-chip">sells through escrow</span>
+      ) : null}
       <p className="hardware">
+        <span className="label">Reported by the machine</span>
         {gpu ? (
           <>
             <strong>{gpu.name.replace(/^NVIDIA /, "")}</strong> · {gpu.vramGb} GB VRAM
@@ -86,11 +151,12 @@ function Measured({ worker: w }: { worker: WorkerSnapshot }) {
   if (!f && !img) return <p className="measured muted">Not measured yet</p>;
   return (
     <ul className="measured">
+      <li className="label">Measured by the market</li>
       {f ? (
         <li className={f.verified ? "good" : "bad"}>
           {f.verified
-            ? `Measured ${formatSeconds(f.calibSec)} ✓ (answer checked)`
-            : `Measured ${formatSeconds(f.calibSec)} ✗ (wrong answer)`}
+            ? `CPU render in ${formatSeconds(f.calibSec)} ✓ (answer checked)`
+            : `CPU render in ${formatSeconds(f.calibSec)} ✗ (wrong answer)`}
         </li>
       ) : null}
       {img ? <li>1024² image in {formatSeconds(img.secImage1024x4)} (timed)</li> : null}
