@@ -7,6 +7,7 @@ import {
   JOB_KILL_GRACE_SEC,
   RESULT_MAX_BYTES,
 } from "@pekkah/protocol";
+import { docker } from "../docker.js";
 import type { JobContext, JobOutput, Workload } from "./types.js";
 
 export interface FractalConfig {
@@ -69,22 +70,6 @@ async function prepareJobDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   if (process.getuid?.() === 0) await chown(dir, 1000, 1000);
   else await chmod(dir, 0o777);
-}
-
-function docker(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => {
-      stdout += d;
-    });
-    child.stderr.on("data", (d) => {
-      stderr += d;
-    });
-    child.on("error", (err) => resolve({ code: -1, stdout, stderr: String(err) }));
-    child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
-  });
 }
 
 export function createFractalWorkload(cfg: FractalConfig): Workload<FractalParamsType> {
