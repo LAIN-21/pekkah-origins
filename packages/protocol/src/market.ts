@@ -159,6 +159,8 @@ export type PaymentReceipt = z.infer<typeof PaymentReceipt>;
 /** Masumi escrow lock details (PR-10), from the decoded tx and the signed terms (`extra.terms`). */
 export const EscrowLock = z.object({
   txHash: TxHash,
+  /** The escrow output's index in the lock transaction (PR-16): what a release starts from. */
+  outputIndex: z.number().int().nonnegative().optional(),
   escrowAddress: CardanoAddress,
   /** The selected worker's address (`terms.sellerAddress`). */
   sellerAddress: CardanoAddress,

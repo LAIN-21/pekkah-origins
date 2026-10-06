@@ -80,14 +80,12 @@ function submitResultTime(datum: Data.Constr): bigint {
   return value;
 }
 
-export interface ResultSubmitterOptions {
+export interface SellerChainOptions {
   /** The facilitator's Blockfrost passthrough (it adds the project id). */
   chainUrl: string;
   /** SELLER_A_MNEMONIC, normalized: the market already holds it to sign escrow terms. */
   sellerMnemonic: string;
   sellerAddress: string;
-  log: Logger;
-  now?: () => number;
 }
 
 export interface SubmitResultInput {
@@ -108,7 +106,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Seller A's wallet over the facilitator's passthrough. A wallet error can name words, so its
  * message never leaves here. */
-function sellerClient(o: ResultSubmitterOptions) {
+export function sellerClient(o: { chainUrl: string; sellerMnemonic: string }) {
   try {
     return Client.make(preprod)
       .withBlockfrost({ baseUrl: o.chainUrl })
@@ -118,36 +116,95 @@ function sellerClient(o: ResultSubmitterOptions) {
   }
 }
 
+export type SellerClient = ReturnType<typeof sellerClient>;
+
+const sameRef = (a: UTxO.UTxO, b: UTxO.UTxO) =>
+  TransactionHash.toHex(a.transactionId) === TransactionHash.toHex(b.transactionId) &&
+  a.index === b.index;
+
 /**
- * The submitter, or null with the reason logged: a failure here disables escrow result
- * submission only, never the market (as with a Masumi seller key that does not match).
+ * The collateral reserve: the largest pure-ADA wallet UTxO, which must hold at least 2 tADA.
+ * Fees and min-ADA come from the other UTxOs (`isNot` filters it out of coin selection), so the
+ * reserve survives for the next script transaction.
  */
-export function tryCreateResultSubmitter(o: ResultSubmitterOptions) {
+export function collateralReserve(
+  wallet: readonly UTxO.UTxO[],
+): { ok: true; utxo: UTxO.UTxO; isNot: (u: UTxO.UTxO) => boolean } | { ok: false; reason: string } {
+  const pure = wallet
+    .filter((u) => !Assets.hasMultiAsset(u.assets) && u.scriptRef === undefined)
+    .sort((a, b) => Number(Assets.lovelaceOf(b.assets) - Assets.lovelaceOf(a.assets)));
+  const reserve = pure[0];
+  if (!reserve || Assets.lovelaceOf(reserve.assets) < MIN_COLLATERAL) {
+    return {
+      ok: false,
+      reason: "Seller A needs a pure-ADA UTxO of at least 2 tADA for collateral",
+    };
+  }
+  return { ok: true, utxo: reserve, isNot: (u) => !sameRef(u, reserve) };
+}
+
+/**
+ * Seller A on chain: its wallet over the facilitator's passthrough (chain reads, script
+ * evaluation and submits all go through the facilitator), and one queue for its script
+ * transactions, result submissions and releases alike: one wallet, never two in flight.
+ */
+export interface SellerChain {
+  client: SellerClient;
+  chainUrl: string;
+  sellerAddress: string;
+  sellerKeyHash: KeyHash.KeyHash;
+  /** Runs a seller transaction once the previous one has ended, however it ended. */
+  enqueue<T>(task: () => Promise<T>): Promise<T>;
+}
+
+export function createSellerChain(o: SellerChainOptions): SellerChain {
+  // The checks whose errors name no secret come first.
+  masumiValidator();
+  const seller = addressCredentials(o.sellerAddress);
+  if (seller.payment.isScript) throw new Error("the Masumi seller must be a key address");
+  const client = sellerClient(o);
+  let queue: Promise<unknown> = Promise.resolve();
+  return {
+    client,
+    chainUrl: o.chainUrl,
+    sellerAddress: o.sellerAddress,
+    sellerKeyHash: KeyHash.fromHex(seller.payment.hash),
+    enqueue<T>(task: () => Promise<T>): Promise<T> {
+      const next = queue.then(task);
+      queue = next.catch(() => undefined);
+      return next;
+    },
+  };
+}
+
+/**
+ * Seller A's chain access, or null with the reason logged: a failure here disables escrow
+ * result submission and release only, never the market (as with a Masumi seller key that
+ * does not match).
+ */
+export function tryCreateSellerChain(o: SellerChainOptions & { log: Logger }): SellerChain | null {
   try {
-    return createResultSubmitter(o);
+    return createSellerChain(o);
   } catch (err) {
     o.log.error(
-      `Escrow result submission disabled: ${err instanceof Error ? err.message : "setup failed"}`,
+      `Escrow result submission and release disabled: ${err instanceof Error ? err.message : "setup failed"}`,
     );
     return null;
   }
 }
 
-/**
- * Submits escrow results as Seller A, one transaction at a time (one wallet). Chain reads,
- * script evaluation and the submit all go through the facilitator.
- */
+export interface ResultSubmitterOptions {
+  chain: SellerChain;
+  now?: () => number;
+}
+
+/** Submits escrow results as Seller A, through the seller's transaction queue. */
 export function createResultSubmitter(o: ResultSubmitterOptions) {
   const now = o.now ?? Date.now;
-  // The checks whose errors name no secret come first.
   const script = masumiValidator();
   const escrowAddress = masumiEscrowAddress(NETWORK);
-  const seller = addressCredentials(o.sellerAddress);
-  if (seller.payment.isScript) throw new Error("the Masumi seller must be a key address");
-  const sellerKeyHash = KeyHash.fromHex(seller.payment.hash);
   const cooldownMs = BigInt(MASUMI_DEFAULT_DEPLOYMENT.cooldownPeriod);
-  const client = sellerClient(o);
-  let queue: Promise<unknown> = Promise.resolve();
+  const { client, sellerKeyHash } = o.chain;
 
   /** The escrow output, once the facilitator's view of the chain has it (polls 5 s apart). */
   async function lockedUtxo(input: SubmitResultInput): Promise<UTxO.UTxO> {
@@ -163,7 +220,6 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
       await sleep(5_000);
     }
   }
-
   async function run(input: SubmitResultInput): Promise<SubmitResultOutcome> {
     const utxo = await lockedUtxo(input);
     if (Address.toBech32(utxo.address) !== escrowAddress) {
@@ -184,22 +240,8 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
       return { ok: false, reason: "the submit-result window has closed" };
     }
     const datum = submittedDatum(locked, input.resultHash, to + cooldownMs + 1_000n);
-    // Reserve the largest pure-ADA UTxO as collateral and pay the fee from the others, so the
-    // reserve survives for the next submit.
-    const wallet = await client.getWalletUtxos();
-    const pure = wallet
-      .filter((u) => !Assets.hasMultiAsset(u.assets) && u.scriptRef === undefined)
-      .sort((a, b) => Number(Assets.lovelaceOf(b.assets) - Assets.lovelaceOf(a.assets)));
-    const reserve = pure[0];
-    if (!reserve || Assets.lovelaceOf(reserve.assets) < MIN_COLLATERAL) {
-      return {
-        ok: false,
-        reason: "Seller A needs a pure-ADA UTxO of at least 2 tADA for collateral",
-      };
-    }
-    const isReserve = (u: UTxO.UTxO) =>
-      TransactionHash.toHex(u.transactionId) === TransactionHash.toHex(reserve.transactionId) &&
-      u.index === reserve.index;
+    const reserve = collateralReserve(await client.getWalletUtxos());
+    if (!reserve.ok) return reserve;
     const built = await client
       .newTx()
       .collectFrom({ inputs: [utxo], redeemer: Data.constr(SUBMIT_RESULT, []) })
@@ -216,12 +258,9 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
         passAdditionalUtxos: input.dryRunUtxo !== undefined,
         // Exactly the reserve's lovelace: the SDK takes the largest pure-ADA UTxO first, so the
         // collateral is the reserve alone and needs no return output.
-        setCollateral: Assets.lovelaceOf(reserve.assets),
+        setCollateral: Assets.lovelaceOf(reserve.utxo.assets),
         coinSelection: (available, required) =>
-          largestFirstSelection(
-            available.filter((u) => !isReserve(u)),
-            required,
-          ),
+          largestFirstSelection(available.filter(reserve.isNot), required),
       });
     const tx = await built.toTransaction();
     const feeLovelace = tx.body.fee.toString();
@@ -235,13 +274,11 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
 
   /** Never throws: a failure is an outcome. Build or evaluation errors submit nothing. */
   return function submit(input: SubmitResultInput): Promise<SubmitResultOutcome> {
-    const next = queue.then(() =>
+    return o.chain.enqueue(() =>
       run(input).catch((err: unknown) => ({
         ok: false as const,
         reason: err instanceof Error ? err.message : String(err),
       })),
     );
-    queue = next;
-    return next;
   };
 }

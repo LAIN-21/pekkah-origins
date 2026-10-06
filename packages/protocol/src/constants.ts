@@ -70,9 +70,13 @@ export const HELLO_LIMITS = {
   prices: 4,
 } as const;
 
-/** The only wording for a Masumi lock (PLAN 4.8): locked in escrow, never paid or released. */
+/**
+ * The wording for a Masumi lock until an escrow.released event exists for it (CLAUDE.md rule 4):
+ * locked in escrow, never paid or released. Since PR-16 the seller collects after the unlock.
+ * No apostrophes: the UI's tests look for it in HTML, which escapes them.
+ */
 export const MASUMI_LOCK_LABEL =
-  "Locked in Masumi escrow. Release, refund and dispute tooling is my next step.";
+  "Locked in Masumi escrow until the unlock time. Then the seller collects the price and the collateral goes back to the buyer. Dispute is my next step.";
 /** Only once an escrow.released event exists for the lock (CLAUDE.md rule 4). */
 export const MASUMI_RELEASED_LABEL =
   "Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back.";

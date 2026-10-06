@@ -62,7 +62,7 @@ export function escrowLines(r: EscrowReceipt, workerId: string): string[] {
     `datum      inline datum ${r.inlineDatum ? "present" : "missing"} on the escrow output`,
     `payBy      ${sgt(r.payByTime)}`,
     `submit     ${sgt(r.submitResultTime)}`,
-    `unlock     ${sgt(r.unlockTime)}`,
+    `unlock     ${sgt(r.unlockTime)}: worker ${workerId} collects then, and my collateral comes back`,
     `dispute    ${sgt(r.externalDisputeUnlockTime)}`,
     `status     ${MASUMI_LOCK_LABEL}`,
   ];
