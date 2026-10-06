@@ -109,6 +109,16 @@ release_lock() {
   LOCK_DIR=""
 }
 
+# True when the commit is already part of main on GitHub: such a deploy needs no
+# protection, whatever its branch was called.
+merged_into_main() {
+  local main_sha
+  main_sha=$(git ls-remote "$REPO_URL" refs/heads/main | cut -f1)
+  [ -n "$main_sha" ] || return 1
+  git -C "$ROOT" fetch -q origin main 2>/dev/null || true
+  git -C "$ROOT" merge-base --is-ancestor "$1" "$main_sha" 2>/dev/null
+}
+
 # Refuse to replace someone else's recent non-main deploy without --force.
 check_current() {
   local host=$1 project=$2 current cur_ref cur_sha cur_epoch cur_session age
@@ -124,7 +134,11 @@ check_current() {
   age=$(($(date +%s) - ${cur_epoch:-0}))
   echo "Currently deployed: pekkah-$project on $host = $cur_ref @ $(printf '%s' "$cur_sha" | cut -c1-7), $((age / 60)) min ago, by $cur_session"
   if [ "$cur_ref" != main ] && [ "$cur_ref" != "$ref" ] && [ $age -lt $FORCE_WINDOW_SEC ] && [ $force -eq 0 ]; then
-    die "refusing to replace $cur_ref (deployed by $cur_session less than 20 min ago). Ask Luis, then rerun with --force."
+    if merged_into_main "$cur_sha"; then
+      echo "$cur_ref @ $(printf '%s' "$cur_sha" | cut -c1-7) is already merged into main, so it can be replaced."
+    else
+      die "refusing to replace $cur_ref (deployed by $cur_session less than 20 min ago). Ask Luis, then rerun with --force."
+    fi
   fi
 }
 
@@ -216,12 +230,23 @@ if [ "\$project" = worker ]; then
     echo "No workloads/fractal yet; skipping the fractal image"
   fi
 fi
+build=1
+if [ "\$project" = flux ]; then
+  # A rebuild with no changes still gets a new image id, and compose would then
+  # recreate flux (a minute of model loading). Build only when workloads/flux changed.
+  export FLUX_CONTEXT=\$(git rev-parse HEAD:workloads/flux)
+  have=\$(docker image inspect -f '{{index .Config.Labels "pekkah.context"}}' pekkah/flux:local 2>/dev/null || true)
+  if [ "\$have" = "\$FLUX_CONTEXT" ]; then
+    build=0
+    echo "pekkah/flux:local already matches workloads/flux; not rebuilding"
+  fi
+fi
 if [ -z "\$($compose config --services)" ]; then
   echo "pekkah-\$project has no services yet; nothing to start"
 else
-  echo "Building and starting pekkah-\$project"
+  echo "Starting pekkah-\$project"
   # Same as up --build, but the build log stays quiet (errors still print).
-  $compose build --quiet
+  if [ "\$build" = 1 ]; then $compose build --quiet; fi
   $compose up -d --remove-orphans --quiet-pull
 fi
 REMOTE

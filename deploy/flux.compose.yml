@@ -7,6 +7,9 @@
 
 x-build: &build
   context: ../workloads/flux
+  # The git tree of workloads/flux: deploy.sh skips the build when it matches.
+  labels:
+    pekkah.context: ${FLUX_CONTEXT:-unknown}
 
 x-logging: &logging
   driver: json-file
