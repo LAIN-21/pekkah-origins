@@ -13,9 +13,13 @@ import {
   registerSmokeRoute,
 } from "./dev.js";
 import { EventBus } from "./events.js";
+import { JobStore } from "./jobs.js";
 import { OfferStore } from "./offers.js";
+import { registerPaidJobRoute } from "./paid.js";
 import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
+import { registerAgentEvents, registerReadRoutes } from "./routes.js";
+import { RunStore } from "./runs.js";
 import { UiHub } from "./ui.js";
 import { parseWorkerTokens, WorkerRegistry } from "./workers.js";
 
@@ -34,6 +38,8 @@ const env = readEnv("market", {
   /** `A:<token>,B:<token>,C:<token>`: the allowlist of workers that may join. */
   WORKER_TOKENS: z.string().min(1),
   DEMO_DAILY_RUNS: z.coerce.number().int().min(0).default(40),
+  AGENT_TOKEN: z.string().min(16),
+  DATA_DIR: z.string().min(1).default("/var/lib/pekkah"),
 });
 const log = createLogger("market");
 if (env.PEKKAH_DEV_ROUTES && !env.DEMO_TOKEN) {
@@ -62,6 +68,15 @@ const seller = loadMasumiSeller();
 const sha = gitSha();
 const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
 const bus = new EventBus(log);
+const offers = new OfferStore();
+const jobs = new JobStore();
+const runs = new RunStore(bus, env.DATA_DIR, log);
+// The paid job's status follows the worker: dispatched, then running once it accepts.
+bus.subscribe((event) => {
+  if (event.type !== "job.running" || !event.jobId) return;
+  const job = jobs.get(event.jobId);
+  if (job?.status === "dispatched") job.status = "running";
+});
 const payments = createMarketPayments(
   {
     facilitatorUrl: env.FACILITATOR_URL,
@@ -70,6 +85,7 @@ const payments = createMarketPayments(
   },
   bus,
   log,
+  { jobs, offers },
 );
 const registry = new WorkerRegistry({
   tokens: parseWorkerTokens(env.WORKER_TOKENS),
@@ -77,7 +93,6 @@ const registry = new WorkerRegistry({
   log,
   calibrate: createCalibrator(bus, log),
 });
-const offers = new OfferStore();
 const sellers = Object.fromEntries(
   (["A", "B", "C"] as const).flatMap((id) => {
     const address = env[`SELLER_${id}_ADDRESS`];
@@ -101,6 +116,18 @@ const app = createApp({
       asset: env.PEKKAH_ASSET,
       log,
     });
+    // Registered directly on app, with the payment gate in the route's own chain (fact 11).
+    registerPaidJobRoute(app, {
+      ...payments,
+      offers,
+      jobs,
+      registry,
+      bus,
+      l1Confirmations: env.L1_CONFIRMATIONS,
+      log,
+    });
+    registerReadRoutes(app, { jobs, runs, facilitatorUrl: env.FACILITATOR_URL, log });
+    registerAgentEvents(app, bearerGuard(env.AGENT_TOKEN), bus);
     if (env.PEKKAH_DEV_ROUTES && env.DEMO_TOKEN) {
       const guard = bearerGuard(env.DEMO_TOKEN);
       const common = {
