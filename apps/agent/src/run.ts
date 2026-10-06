@@ -82,6 +82,7 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
   const route = SCENARIOS[o.scenario].route;
   if (route !== "jobs") return fail(`the ${route} route arrives in PR-10`);
   let paid: { offer: Offer | CounterOffer; job: JobResultBody } | null = null;
+  let failedOver = false;
   for (let attempt = 1; !paid; attempt += 1) {
     const attemptRequest = excluded.length
       ? { ...request, constraints: { ...request.constraints, exclude: [...excluded] } }
@@ -129,7 +130,8 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
       paid = { offer, job: body.data };
       break;
     }
-    if (result.status === 502 && attempt < 2) {
+    if (result.status === 502 && !failedOver && attempt < MAX_ATTEMPTS) {
+      failedOver = true;
       excluded.push(offer.workerId);
       const reason = `${offer.workerId}'s job failed and its payment was cancelled: nothing was charged. Re-quoting without ${offer.workerId}.`;
       o.print(`reroute    ${reason}`);

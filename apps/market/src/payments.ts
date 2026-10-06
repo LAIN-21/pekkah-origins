@@ -2,11 +2,13 @@ import {
   attachPaymentHooks,
   buildReceipt,
   createResourceServer,
+  decodeSignedTx,
   PaymentOperations,
   type ResourceServerOptions,
 } from "@pekkah/payments";
-import { type JobEventInput, MAX_TIMEOUT_SECONDS } from "@pekkah/protocol";
+import { type JobEventInput, MAX_TIMEOUT_SECONDS, NETWORK } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
+import { slotToPosixMs } from "@x402/cardano";
 import type { HTTPRequestContext, x402ResourceServer } from "@x402/core/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
@@ -74,7 +76,15 @@ export function createMarketPayments(
   ) => {
     if (watching.has(txHash)) return;
     watching.add(txHash);
-    const deadline = Date.now() + MAX_TIMEOUT_SECONDS * 1000;
+    // Until the chain passes the transaction's own TTL (plus a minute for the block to be
+    // seen); without a TTL, the longest window a payment can have.
+    let deadline = Date.now() + MAX_TIMEOUT_SECONDS * 1000;
+    try {
+      const ttl = decodeSignedTx(payload).ttlSlot;
+      if (ttl !== undefined) deadline = slotToPosixMs(NETWORK, ttl) + 60_000;
+    } catch {
+      // Keep the fallback.
+    }
     const stop = (reason: string) => {
       watching.delete(txHash);
       log.warn({ txHash, key, reason }, "late settlement gave up");

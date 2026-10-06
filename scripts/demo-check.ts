@@ -27,6 +27,11 @@ const { values } = parseArgs({
     "no-runs-md": { type: "boolean", default: false },
   },
 });
+const rounds = Number(values.runs);
+if (!Number.isInteger(rounds) || rounds < 1) {
+  console.error("demo-check: --runs takes a positive integer");
+  process.exit(2);
+}
 process.env.PEKKAH_ENV_FILE ||= join(homedir(), ".pekkah", "env", "market.env");
 loadLocalEnv();
 const base = process.env.PUBLIC_URL?.replace(/\/+$/, "");
@@ -56,7 +61,9 @@ const sgt = (iso: string) =>
     timeStyle: "medium",
   }).format(new Date(iso));
 
+/** Starts a run, waiting out a run in progress or the rate limit, for 5 minutes at most. */
 async function start(scenario: ScenarioName): Promise<string> {
+  const deadline = Date.now() + 5 * 60_000;
   for (;;) {
     const res = await fetch(`${base}/api/demo/run`, {
       method: "POST",
@@ -64,12 +71,13 @@ async function start(scenario: ScenarioName): Promise<string> {
       body: JSON.stringify({ scenario }),
     });
     if (res.status === 202) return ((await res.json()) as { runId: string }).runId;
-    if (res.status === 429 || res.status === 409) {
+    const answer = `HTTP ${res.status} ${await res.text()}`;
+    if ((res.status === 429 || res.status === 409) && Date.now() < deadline) {
       const wait = Number(res.headers.get("retry-after") ?? "10") * 1000;
       await sleep(Math.max(wait, 5_000));
       continue;
     }
-    throw new Error(`demo run refused: HTTP ${res.status} ${await res.text()}`);
+    throw new Error(`demo run refused: ${answer}`);
   }
 }
 
@@ -79,7 +87,11 @@ async function events(runId: string): Promise<JobEvent[]> {
   return RunLog.parse(await res.json()).events;
 }
 
-/** Waits for the run to end; for failover, kills C's job once it runs. */
+/**
+ * Waits for the run to end, and for a completed run also for its payment.settled and
+ * receipt.issued (a late settlement sends them after the run ends). For failover, kills C's
+ * job once it runs.
+ */
 async function follow(runId: string, killC: boolean): Promise<JobEvent[]> {
   const deadline = Date.now() + 12 * 60_000;
   let killed = false;
@@ -96,8 +108,17 @@ async function follow(runId: string, killC: boolean): Promise<JobEvent[]> {
         killed = true;
       }
     }
-    if (list.some((e) => e.type === "run.completed" || e.type === "run.failed")) return list;
-    if (Date.now() > deadline) throw new Error(`run ${runId} did not end within 12 minutes`);
+    if (list.some((e) => e.type === "run.failed")) return list;
+    const done = list.find((e) => e.type === "run.completed");
+    if (done?.type === "run.completed") {
+      const tx = done.data.txHash;
+      const settled = list.some((e) => e.type === "payment.settled" && e.data.txHash === tx);
+      const receipt = list.some((e) => e.type === "receipt.issued" && e.data.receipt.txHash === tx);
+      // At the deadline, check() names whatever is still missing.
+      if ((settled && receipt) || Date.now() > deadline) return list;
+    } else if (Date.now() > deadline) {
+      throw new Error(`run ${runId} did not end within 12 minutes`);
+    }
     await sleep(2_000);
   }
 }
@@ -114,7 +135,8 @@ interface Row {
   sha256?: string;
 }
 
-const canceled: { txHash: string; ttlSlot?: string }[] = [];
+/** Each cancelled payment, with the run it belongs to: that run passes only if it stays off chain. */
+const canceled: { txHash: string; ttlSlot?: string; row: Row }[] = [];
 
 async function check(scenario: ScenarioName, list: JobEvent[]): Promise<Row> {
   const expect = EXPECT[scenario];
@@ -158,6 +180,7 @@ async function check(scenario: ScenarioName, list: JobEvent[]): Promise<Row> {
     if (e.type !== "payment.canceled" || !e.data.txHash) continue;
     const s = signed.find((x) => x.type === "payment.signed" && x.data.txHash === e.data.txHash);
     canceled.push({
+      row,
       txHash: e.data.txHash,
       ...(s?.type === "payment.signed" && s.data.ttlSlot ? { ttlSlot: s.data.ttlSlot } : {}),
     });
@@ -182,7 +205,6 @@ if (!imageReady && !values.scenarios)
   console.log("note: no worker offers image yet; skipping gpu-image");
 
 const rows: Row[] = [];
-const rounds = Number(values.runs);
 for (let round = 1; round <= rounds; round++) {
   for (const scenario of scenarios) {
     const runId = await start(scenario);
@@ -199,13 +221,23 @@ console.log("\ncancelled payments on chain:");
 let chainOk = true;
 for (const c of canceled) {
   const q = c.ttlSlot ? `?ttlSlot=${c.ttlSlot}` : "";
-  const status = (await (await fetch(`${base}/api/tx/${c.txHash}${q}`)).json()) as {
-    found: boolean;
-    final?: boolean;
-  };
-  if (status.found) chainOk = false;
+  const res = await fetch(`${base}/api/tx/${c.txHash}${q}`).catch(() => null);
+  const status = (await res?.json().catch(() => null)) as { found?: unknown; final?: unknown };
+  // Fail closed: only a definite found:false clears a cancelled payment.
+  if (!res?.ok || typeof status?.found !== "boolean") {
+    chainOk = false;
+    c.row.pass = false;
+    c.row.why.push(`could not check cancelled tx ${c.txHash} (HTTP ${res?.status ?? "-"})`);
+    console.log(`  ${c.txHash} could not be checked (HTTP ${res?.status ?? "-"})`);
+    continue;
+  }
+  if (status.found) {
+    chainOk = false;
+    c.row.pass = false;
+    c.row.why.push(`cancelled tx ${c.txHash} is on chain`);
+  }
   console.log(
-    `  ${c.txHash} found=${status.found}${status.final === undefined ? "" : ` final=${status.final}`}`,
+    `  ${c.txHash} found=${status.found}${typeof status.final === "boolean" ? ` final=${status.final}` : ""}`,
   );
 }
 
@@ -213,7 +245,7 @@ console.log("");
 const passed = rows.filter((r) => r.pass).length;
 for (const r of rows) {
   console.log(
-    `${r.pass ? "PASS" : "FAIL"}  ${r.scenario.padEnd(12)} ${(r.workerId ?? "-").padEnd(3)} ${(r.amountAtomic ? formatUsdAtomic(r.amountAtomic) : "-").padEnd(7)} ${r.durationMs !== undefined ? `${(r.durationMs / 1000).toFixed(1)} s` : ""}`,
+    `${r.pass ? "PASS" : "FAIL"}  ${r.scenario.padEnd(12)} ${(r.workerId ?? "-").padEnd(3)} ${(r.amountAtomic ? formatUsdAtomic(r.amountAtomic) : "-").padEnd(7)} ${r.durationMs !== undefined ? `${(r.durationMs / 1000).toFixed(1)} s` : ""} ${r.pass ? "" : r.why.join("; ")}`.trimEnd(),
   );
 }
 const perRound = scenarios.length;

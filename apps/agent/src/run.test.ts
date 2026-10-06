@@ -95,6 +95,15 @@ describe("runScenario", () => {
     expect(f.events.at(-1)?.type).toBe("run.completed");
   });
 
+  it("still fails over once after a re-quote, while a quote is left", async () => {
+    const f = fakes([404, 502, 200]);
+    const outcome = await f.run();
+    expect(outcome).toMatchObject({ ok: true, txHash: TX });
+    expect(f.bought).toEqual(["O1", "O2", "O3"]);
+    const reroutes = f.events.filter((e) => e.type === "agent.reroute").map((e) => e.data);
+    expect(reroutes).toMatchObject([{ excluded: [] }, { excluded: ["B"] }]);
+  });
+
   it("stops after three quotes, so a run always ends", async () => {
     const f = fakes([410, 409, 404, 200]);
     const outcome = await f.run();
