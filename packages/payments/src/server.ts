@@ -188,12 +188,28 @@ export interface PaymentHookHandlers {
   onSettled?(
     info: PaymentHookInfo & { settle: SettleResponse; receipt: PaymentReceipt },
   ): void | Promise<void>;
-  onSettleFailed?(info: PaymentHookInfo & { reason: string }): void | Promise<void>;
+  /**
+   * `errorReason` is the facilitator's code; `settlement_pending` means the transaction may
+   * still land, and `paymentPayload` lets the caller resume watching it (late settlement).
+   */
+  onSettleFailed?(
+    info: PaymentHookInfo & {
+      reason: string;
+      errorReason?: string;
+      paymentPayload: PaymentPayload;
+    },
+  ): void | Promise<void>;
   /** Only for the payment that holds its resource, and only when the handler failed or threw. */
   onCanceled?(
     info: PaymentHookInfo & { reason: VerifiedPaymentCancellationReason; status?: number },
   ): void | Promise<void>;
   warn?(message: string, detail: Record<string, unknown>): void;
+}
+
+/** The facilitator's code on a settle failure (core wraps it in a SettleError). */
+function errorCode(error: unknown): { errorReason?: string } {
+  const code = (error as { errorReason?: unknown } | null)?.errorReason;
+  return typeof code === "string" ? { errorReason: code } : {};
 }
 
 function requestOf(transportContext: unknown): HTTPRequestContext | undefined {
@@ -294,6 +310,8 @@ export function attachPaymentHooks(
         request: requestOf(ctx.transportContext),
         requirements: clone(ctx.requirements),
         reason: ctx.error.message,
+        ...errorCode(ctx.error),
+        paymentPayload: clone(ctx.paymentPayload),
       }),
     );
   });

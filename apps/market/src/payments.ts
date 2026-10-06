@@ -1,12 +1,15 @@
 import {
   attachPaymentHooks,
+  buildReceipt,
   createResourceServer,
   PaymentOperations,
   type ResourceServerOptions,
 } from "@pekkah/payments";
-import type { JobEventInput } from "@pekkah/protocol";
+import { type JobEventInput, MAX_TIMEOUT_SECONDS } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
 import type { HTTPRequestContext, x402ResourceServer } from "@x402/core/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { smokeSellerFromPath } from "./dev.js";
 import type { EventBus } from "./events.js";
 import type { JobStore } from "./jobs.js";
@@ -38,7 +41,13 @@ export function createMarketPayments(
   log: Logger,
   stores: { jobs: JobStore; offers: OfferStore },
 ): MarketPayments {
-  const server = createResourceServer(options);
+  const facilitator =
+    options.facilitator ??
+    new HTTPFacilitatorClient({
+      url: options.facilitatorUrl,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    });
+  const server = createResourceServer({ ...options, facilitator });
   const operations = new PaymentOperations();
 
   /** Payment events carry the run of the offer they pay for; smoke payments are dev events. */
@@ -51,6 +60,66 @@ export function createMarketPayments(
       ...(runId ? { runId } : {}),
       ...(isDev(key) ? { dev: true } : {}),
     } as JobEventInput);
+  };
+
+  // Late settlement (PLAN 4.4): the transaction may still land after settle gave up. Keep the
+  // result and ask the facilitator again every 20 s; that resumes watching the same
+  // transaction and never broadcasts it again. The market itself never calls Blockfrost.
+  const watching = new Set<string>();
+  const settleLate = (
+    txHash: string,
+    key: string,
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ) => {
+    if (watching.has(txHash)) return;
+    watching.add(txHash);
+    const deadline = Date.now() + MAX_TIMEOUT_SECONDS * 1000;
+    const stop = (reason: string) => {
+      watching.delete(txHash);
+      log.warn({ txHash, key, reason }, "late settlement gave up");
+      emit(key, { type: "payment.failed", data: { txHash, reason } });
+    };
+    const tick = async () => {
+      try {
+        const result = await facilitator.settle(payload, requirements);
+        if (result.success) {
+          watching.delete(txHash);
+          operations.recordSettle(txHash, result);
+          const job = stores.jobs.byTxHash(txHash);
+          if (job) job.paid = true;
+          const receipt = buildReceipt({ paymentPayload: payload, requirements, settle: result });
+          log.info({ txHash, key }, "payment settled late");
+          emit(key, {
+            type: "payment.settled",
+            ...(job ? { jobId: job.jobId } : {}),
+            data: {
+              txHash,
+              explorerUrl: receipt.explorerUrl,
+              late: true,
+              transferMethod: receipt.transferMethod,
+            },
+          });
+          emit(key, {
+            type: "receipt.issued",
+            ...(job ? { jobId: job.jobId } : {}),
+            data: { receipt, resultUrl: job ? `/api/results/${job.jobId}` : "" },
+          });
+          return;
+        }
+        if (result.errorReason !== "settlement_pending") {
+          return stop(`the transaction did not land (${result.errorReason ?? "unknown"})`);
+        }
+      } catch (err) {
+        log.warn(
+          { txHash, err: err instanceof Error ? err.message : err },
+          "late settle attempt failed",
+        );
+      }
+      if (Date.now() >= deadline) return stop("the validity window closed");
+      setTimeout(() => void tick(), 20_000);
+    };
+    setTimeout(() => void tick(), 20_000);
   };
 
   attachPaymentHooks(server, operations, {
@@ -79,9 +148,17 @@ export function createMarketPayments(
         data: { receipt, resultUrl: job ? `/api/results/${job.jobId}` : "" },
       });
     },
-    onSettleFailed: ({ txHash, key, reason }) => {
-      // The result stays with the market; PR-09 keeps watching for a late settlement.
-      log.warn({ txHash, key, reason }, "payment settle failed");
+    onSettleFailed: ({ txHash, key, reason, errorReason, paymentPayload, requirements }) => {
+      // The result stays with the market; a pending transaction is watched until it lands.
+      log.warn({ txHash, key, reason, errorReason }, "payment settle failed");
+      if (errorReason === "settlement_pending") {
+        emit(key, {
+          type: "payment.failed",
+          data: { txHash, reason: "settlement pending: still watching the transaction" },
+        });
+        settleLate(txHash, key, paymentPayload, requirements);
+        return;
+      }
       emit(key, { type: "payment.failed", data: { txHash, reason } });
     },
     onCanceled: ({ txHash, key, reason, status }) => {

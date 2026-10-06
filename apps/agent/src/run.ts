@@ -2,9 +2,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Buyer } from "@pekkah/buyer";
 import {
+  type CounterOffer,
   explorerTxUrl,
   formatUsdAtomic,
   JobResultBody,
+  type Offer,
   RUN_ID_HEADER,
   SCENARIOS,
   type ScenarioName,
@@ -46,6 +48,15 @@ export interface SavedPayment {
 
 const EXT: Record<string, string> = { "image/png": "png", "application/octet-stream": "bin" };
 
+function savePayment(file: string, saved: SavedPayment, print: (line: string) => void): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(saved, null, 2), { mode: 0o600 });
+  } catch {
+    print("note       could not save the payment for replay-last");
+  }
+}
+
 /** One scenario, start to finish, with no human step (PLAN 4.2, 6.1). */
 export async function runScenario(o: RunOptions): Promise<RunOutcome> {
   const started = Date.now();
@@ -62,51 +73,65 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
   const balance = await o.buyer.balance().catch(() => null);
   if (balance) await o.market.event("agent.balance", balance, ids);
 
-  const quote = await o.market.quote(request, o.runId);
-  const decision = decide(quote, PRIVATE_CEILINGS_USD[o.scenario]);
-  await o.market.event(
-    "agent.decision",
-    {
-      kind: decision.kind,
-      ...(decision.chosen ? { chosen: decision.chosen } : {}),
-      reasons: decision.reasons,
-    },
-    ids,
-  );
-  for (const reason of decision.reasons) o.print(`decision   ${reason}`);
-  const offer = decision.chosen;
-  if (decision.kind === "declined" || !offer) return fail(decision.reasons.join(" "));
-
+  // Failover (PLAN 6.4): a failed job costs nothing; re-quote without that worker, once.
+  const excluded: string[] = [...(request.constraints.exclude ?? [])];
   const route = SCENARIOS[o.scenario].route;
   if (route !== "jobs") return fail(`the ${route} route arrives in PR-10`);
-  const url = `${o.market.url}/api/jobs/${offer.offerId}`;
-  const result = await o.buyer.buy({
-    url,
-    headers: { [RUN_ID_HEADER]: o.runId },
-    expect: { payTo: offer.payTo, amountAtomic: offer.priceAtomic, asset: offer.asset },
-    runId: o.runId,
-    offerId: offer.offerId,
-  });
+  let paid: { offer: Offer | CounterOffer; job: JobResultBody } | null = null;
+  for (let attempt = 1; !paid; attempt += 1) {
+    const attemptRequest = excluded.length
+      ? { ...request, constraints: { ...request.constraints, exclude: [...excluded] } }
+      : request;
+    const quote = await o.market.quote(attemptRequest, o.runId);
+    const decision = decide(quote, PRIVATE_CEILINGS_USD[o.scenario]);
+    await o.market.event(
+      "agent.decision",
+      {
+        kind: decision.kind,
+        ...(decision.chosen ? { chosen: decision.chosen } : {}),
+        reasons: decision.reasons,
+      },
+      ids,
+    );
+    for (const reason of decision.reasons) o.print(`decision   ${reason}`);
+    const offer = decision.chosen;
+    if (decision.kind === "declined" || !offer) return fail(decision.reasons.join(" "));
 
-  if (result.paymentHeader && result.txHash && o.lastPaymentFile) {
-    const saved: SavedPayment = {
+    const url = `${o.market.url}/api/jobs/${offer.offerId}`;
+    const result = await o.buyer.buy({
       url,
-      paymentHeader: result.paymentHeader,
+      headers: { [RUN_ID_HEADER]: o.runId },
+      expect: { payTo: offer.payTo, amountAtomic: offer.priceAtomic, asset: offer.asset },
       runId: o.runId,
       offerId: offer.offerId,
-      txHash: result.txHash,
-      savedAt: new Date().toISOString(),
-    };
-    try {
-      mkdirSync(dirname(o.lastPaymentFile), { recursive: true });
-      writeFileSync(o.lastPaymentFile, JSON.stringify(saved, null, 2), { mode: 0o600 });
-    } catch {
-      o.print("note       could not save the payment for replay-last");
+    });
+    if (result.paymentHeader && result.txHash && o.lastPaymentFile) {
+      savePayment(
+        o.lastPaymentFile,
+        {
+          url,
+          paymentHeader: result.paymentHeader,
+          runId: o.runId,
+          offerId: offer.offerId,
+          txHash: result.txHash,
+          savedAt: new Date().toISOString(),
+        },
+        o.print,
+      );
     }
-  }
 
-  const body = JobResultBody.safeParse(result.body);
-  if (result.status !== 200 || !result.settle?.success || !body.success) {
+    const body = JobResultBody.safeParse(result.body);
+    if (result.status === 200 && result.settle?.success && body.success) {
+      paid = { offer, job: body.data };
+      break;
+    }
+    if (result.status === 502 && attempt < 2) {
+      excluded.push(offer.workerId);
+      const reason = `${offer.workerId}'s job failed and its payment was cancelled: nothing was charged. Re-quoting without ${offer.workerId}.`;
+      o.print(`reroute    ${reason}`);
+      await o.market.event("agent.reroute", { excluded: [...excluded], reason }, ids);
+      continue;
+    }
     const reason =
       result.status === 502
         ? `the job failed on ${offer.workerId}; the payment was cancelled and nothing was charged`
@@ -116,7 +141,8 @@ export async function runScenario(o: RunOptions): Promise<RunOutcome> {
     return fail(reason, { ...(result.txHash ? { txHash: result.txHash } : {}) });
   }
 
-  const job = body.data;
+  const { offer } = paid;
+  const job = paid.job;
   o.print(
     `paid       ${formatUsdAtomic(offer.priceAtomic)} tUSDM to ${offer.workerId} (${offer.payTo})`,
   );
