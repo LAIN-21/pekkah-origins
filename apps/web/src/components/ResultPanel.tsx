@@ -1,4 +1,5 @@
 import { ASSET_SYMBOL, explorerAddressUrl, MASUMI_LOCK_LABEL } from "@pekkah/protocol";
+import { useState } from "react";
 import { formatAsset, formatClockSeconds, formatLovelace, formatMs, short } from "../format";
 import { type Attempt, isEscrow, type RunView } from "../run";
 import { EscrowCard } from "./EscrowCard";
@@ -10,6 +11,8 @@ function paidAttempt(run: RunView): Attempt | undefined {
 
 export function ResultPanel({ run, name }: { run: RunView; name: (workerId: string) => string }) {
   const a = paidAttempt(run);
+  // The market keeps results in memory, so a replay after a restart can't load them.
+  const [lost, setLost] = useState<string | null>(null);
   const delivered = [...run.attempts].reverse().find((x) => x.completed);
   if (!a?.receipt) {
     if (delivered && !delivered.settled && !delivered.canceled && !delivered.paymentFailed) {
@@ -23,14 +26,22 @@ export function ResultPanel({ run, name }: { run: RunView; name: (workerId: stri
     return null;
   }
   const completed = a.completed?.data;
+  const url = a.receipt.data.resultUrl;
   return (
     <div className="card">
       <h3>Result</h3>
-      <img
-        className="result"
-        src={a.receipt.data.resultUrl}
-        alt="The delivered result of the job"
-      />
+      {!url ? (
+        <p className="muted">The market didn't attach the result to this receipt.</p>
+      ) : lost === url ? (
+        <p className="muted">The market no longer has this result (it keeps results in memory).</p>
+      ) : (
+        <img
+          className="result"
+          src={url}
+          alt="The delivered result of the job"
+          onError={() => setLost(url)}
+        />
+      )}
       {completed ? (
         <p className="small muted">
           Made by {name(completed.workerId)} in {formatMs(completed.durationMs)} · sha256{" "}

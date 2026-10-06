@@ -35,6 +35,8 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
       const q = e.data.quote;
       const offers = q.offers.length;
       const market = q.marketPriceUsd === null ? "no eligible worker" : formatUsd(q.marketPriceUsd);
+      // The counter-offer's worker is also listed as over budget; it isn't ruled out.
+      const out = q.rejected.filter((r) => r.workerId !== q.counterOffer?.workerId).length;
       return {
         title:
           offers > 0
@@ -42,7 +44,7 @@ export function describeEvent(e: JobEvent, name: (workerId: string) => string): 
             : q.counterOffer
               ? "No exact match: the market made a counter-offer"
               : "No worker can do this job",
-        detail: `Market price: ${market}. ${q.rejected.length} worker${q.rejected.length === 1 ? "" : "s"} ruled out.`,
+        detail: `Market price: ${market}. ${out} worker${out === 1 ? "" : "s"} ruled out.`,
         tone: offers > 0 || q.counterOffer ? "neutral" : "warn",
       };
     }
