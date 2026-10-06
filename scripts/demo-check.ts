@@ -1,12 +1,13 @@
-// scripts/demo-check.sh [--runs N] [--scenarios a,b] [--escrow] [--no-runs-md]
+// scripts/demo-check.sh [--runs N] [--scenarios a,b] [--escrow [--wait-release]] [--no-runs-md]
 // The demo, end to end, against the deployed market (PLAN 9, PR-09). Every run starts through
 // POST /api/demo/run with DEMO_TOKEN, so it shares the hosted agent's run lock and wallet.
 // Failover kills C's job for real (scripts/chaos.sh kill-job c) once it is running. Outcomes
 // come only from /api/runs/:runId/events. Cancelled transactions are then checked on chain.
 // --escrow (PR-10) adds one Masumi escrow run at the end, never inside the rounds (locked funds
 // stay locked), checks the Masumi minimum (PLAN 4.9) and writes the evidence block (12.3).
-// --runs 0 --escrow runs only that. Reads PUBLIC_URL and DEMO_TOKEN from
-// ~/.pekkah/env/market.env; prints neither.
+// --runs 0 --escrow runs only that. --wait-release (PR-16) then waits for the market to release
+// the escrow after its unlock (about 33 minutes after the 402) and records the release. Reads
+// PUBLIC_URL and DEMO_TOKEN from ~/.pekkah/env/market.env; prints neither.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -21,6 +22,7 @@ import {
   formatUsdAtomic,
   type JobEvent,
   MASUMI_LOCK_LABEL,
+  MASUMI_RELEASED_LABEL,
   RunLog,
   type ScenarioName,
   type WorkerSnapshot,
@@ -37,6 +39,7 @@ const { values } = parseArgs({
     runs: { type: "string", default: "1" },
     scenarios: { type: "string" },
     escrow: { type: "boolean", default: false },
+    "wait-release": { type: "boolean", default: false },
     "no-runs-md": { type: "boolean", default: false },
   },
 });
@@ -307,6 +310,31 @@ async function checkEscrow(
     `  result submitted: ${submitted ? submitted.data.txHash : "not seen within 4 minutes"}`,
   );
 
+  // PR-16: the market releases the escrow after its unlock, with no human step. Only an
+  // escrow.released event lets the evidence say "released" (CLAUDE.md rule 4).
+  let released: Extract<JobEvent, { type: "escrow.released" }> | undefined;
+  if (values["wait-release"] && submitted) {
+    const until = Number(locked.data.unlockTime) + 10 * 60_000;
+    console.log(
+      `  waiting for the release, after the unlock at ${deadline(locked.data.unlockTime)} SGT`,
+    );
+    while (!released && Date.now() < until) {
+      await sleep(15_000);
+      released = (await events(runId)).find(
+        (e): e is Extract<JobEvent, { type: "escrow.released" }> =>
+          e.type === "escrow.released" && e.data.lockTxHash === txHash,
+      );
+    }
+    console.log(
+      `  released: ${released ? released.data.txHash : "not seen by unlock + 10 minutes"}`,
+    );
+  }
+  const releaseRow = released
+    ? `| Released | [\`${released.data.txHash}\`](${released.data.explorerUrl}): Masumi Withdraw as the seller after the unlock, ${sgt(released.ts)} SGT: ${formatAtomic(released.data.amountAtomic)} tUSDM to worker ${workerId} (\`${released.data.sellerAddress}\`), and the ${formatLovelace(released.data.collateralReturnLovelace)} collateral back to the buyer (\`${released.data.buyerAddress}\`) |`
+    : values["wait-release"] && submitted
+      ? "| Released | not seen by unlock + 10 minutes |"
+      : undefined;
+
   // 6. Visible: the evidence block (12.3).
   const l: EscrowLock = locked.data;
   const block = [
@@ -323,7 +351,8 @@ async function checkEscrow(
     `| Amount and asset | ${formatAtomic(l.amountAtomic)} tUSDM (\`${l.asset}\`) plus ${formatLovelace(l.collateralLovelace)} collateral |`,
     `| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](${explorerTxUrl(txHash)})); pay by ${deadline(l.payByTime)}, submit result ${deadline(l.submitResultTime)}, unlock ${deadline(l.unlockTime)}, dispute ${deadline(l.externalDisputeUnlockTime)} (SGT) |`,
     resultRow,
-    `| Status | ${MASUMI_LOCK_LABEL} |`,
+    ...(releaseRow ? [releaseRow] : []),
+    `| Status | ${released ? MASUMI_RELEASED_LABEL : MASUMI_LOCK_LABEL} |`,
     "",
   ].join("\n");
   return { pass: why.length === 0, why, block };

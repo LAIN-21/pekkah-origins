@@ -21,6 +21,20 @@ export interface PublishResultInput {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Whether the facilitator sees `txHash` on chain within `polls` polls, `pollMs` apart. */
+export async function waitForTx(
+  txFound: (txHash: string) => Promise<boolean>,
+  txHash: string,
+  pollMs = 5_000,
+  polls = 36,
+): Promise<boolean> {
+  for (let i = 0; i < polls; i++) {
+    await sleep(pollMs);
+    if (await txFound(txHash).catch(() => false)) return true;
+  }
+  return false;
+}
+
 /**
  * After an escrow job's lock lands (PR-10b): submit the delivered result's hash as the seller,
  * then report escrow.result_submitted once the chain shows it (polls 5 s apart, 3 minutes at
@@ -46,21 +60,18 @@ export function createResultPublisher(
         { lockTxHash, txHash: outcome.txHash, feeLovelace: outcome.feeLovelace },
         "escrow result submitted; the funds stay locked in escrow",
       );
-      for (let i = 0; i < polls; i++) {
-        await sleep(pollMs);
-        if (await o.txFound(outcome.txHash).catch(() => false)) {
-          o.emit(input.key, {
-            type: "escrow.result_submitted",
-            jobId: input.jobId,
-            data: {
-              lockTxHash,
-              txHash: outcome.txHash,
-              resultHash,
-              explorerUrl: explorerTxUrl(outcome.txHash),
-            },
-          });
-          return;
-        }
+      if (await waitForTx(o.txFound, outcome.txHash, pollMs, polls)) {
+        o.emit(input.key, {
+          type: "escrow.result_submitted",
+          jobId: input.jobId,
+          data: {
+            lockTxHash,
+            txHash: outcome.txHash,
+            resultHash,
+            explorerUrl: explorerTxUrl(outcome.txHash),
+          },
+        });
+        return;
       }
       o.log.warn({ lockTxHash, txHash: outcome.txHash }, "escrow result not seen on chain in time");
     })();

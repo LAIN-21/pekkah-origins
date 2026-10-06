@@ -66,6 +66,18 @@ export function parametersInputHash(request: unknown): string {
   });
 }
 
+/**
+ * Escrow deadlines after pay-by (PLAN2 2.3), where pay-by is the 402 plus 600 s. The submit
+ * deadline lands 16 minutes after the 402 (the issuer wants at least 15) and the unlock about
+ * 31.5 minutes after it: the floor the library's minimum gaps allow, plus margins. Each gap
+ * clears its minimum by at least 30 s.
+ */
+export const MASUMI_DEADLINES = {
+  submitResultAfterPayByMs: 6 * 60_000,
+  unlockAfterPayByMs: 21.5 * 60_000,
+  externalDisputeUnlockAfterPayByMs: 37 * 60_000,
+} as const;
+
 export function createResourceServer(options: ResourceServerOptions): x402ResourceServer {
   const facilitator =
     options.facilitator ??
@@ -77,6 +89,7 @@ export function createResourceServer(options: ResourceServerOptions): x402Resour
     ? new ExactCardanoScheme({
         masumi: {
           seller: options.masumi.seller,
+          deadlines: MASUMI_DEADLINES,
           ...(options.masumi.commitment ? { commitment: options.masumi.commitment } : {}),
         },
       })
@@ -181,7 +194,7 @@ export function assertMasumiRoute(route: RouteConfig, sample: { amount: string; 
       maxTimeoutSeconds: option.maxTimeoutSeconds ?? MAX_TIMEOUT_SECONDS,
       extra: option.extra ?? {},
     },
-    {},
+    { deadlines: MASUMI_DEADLINES },
   );
 }
 

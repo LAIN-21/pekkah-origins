@@ -2,23 +2,13 @@ import { Data } from "@evolution-sdk/evolution";
 import type { Logger } from "@pekkah/runtime";
 import { describe, expect, it } from "vitest";
 import { throwawayMnemonic } from "../../../packages/runtime/src/test-support/mnemonic.js";
-import { submittedDatum, tryCreateResultSubmitter } from "./result-submit.js";
-
-// The inline datum of a real lock on preprod (tx a6be16bc…#0, public chain data).
-const LOCK_DATUM = [
-  "d8799fd8799fd8799f581c57866dd4917ae0c7dd5775d9ae293463d38b26f0d9bb110f3aa33d2fffd8799fd8799fd879",
-  "9f581c48818dac1373cf717c199be6bae14a475e8936cedb21f5c8ef6e912affffffffd87a80d8799fd8799f581c4ebf",
-  "110b65aecb2218c3c6461e635f9211b073671a483ae750d7c755ffd8799fd8799fd8799f581cdaf7b595a29bb7e9c4e4",
-  "f88e72630e7739e4b09805bde820117cebbaffffffffd87a80582aa4010103272006215820ace3ae5fd197969587df2d",
-  "fe1387c017da109da4e5805c795a5d9268499343865f5840845846a2012767616464726573735839004ebf110b65aecb",
-  "2218c3c6461e635f9211b073671a483ae750d7c755daf7b595a29bb7e9c4e4f88e72630e7739e4b058409805bde82011",
-  "7cebbaa166686173686564f4582063bb25ef6740f3d9eb5860470f6d137ec83ef9257f71ab389cd2f45fc6e2f7d15840",
-  "b46a77ec3c9d5bb578765836e22c454403391f3687684def51614fbd60b0a1aac1c188ab0742ede780cabe1a4c13e2f1",
-  "65f3a61b0aa6d74ad7ae225d3ceb49d19408ff5820b148d439d3cb8d8adafc3cd1cb377166d261a475c68d00a34ef768",
-  "3bbc5d049540401a003d189658203632e82ae498d157e871540f424e8aa11803d41e0d59067fe6621e64b5c2811f401b",
-  "000001a11061c0311b000001a1106f7bd11b000001a11081cb511b000001a110941ad10000d87980ff",
-].join("");
-const RESULT = "454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9";
+import {
+  createResultSubmitter,
+  createSellerChain,
+  submittedDatum,
+  tryCreateSellerChain,
+} from "./result-submit.js";
+import { LOCK_DATUM, RESULT } from "./test-support/escrow.js";
 
 describe("the datum after SubmitResult", () => {
   it("sets the result hash, state and cooldowns, and keeps every other field", () => {
@@ -46,7 +36,7 @@ describe("the datum after SubmitResult", () => {
   });
 });
 
-describe("setting up the submitter", () => {
+describe("setting up Seller A's chain access", () => {
   const options = (sellerAddress: string) => {
     const errors: string[] = [];
     const log = { error: (m: string) => void errors.push(m) } as unknown as Logger;
@@ -58,11 +48,14 @@ describe("setting up the submitter", () => {
     };
     return { o, errors };
   };
+  // Seller A's public payout address on preprod (README): a key address.
+  const SELLER_A =
+    "addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga";
 
-  it("disables only result submission when it cannot be set up", () => {
+  it("disables only result submission and release when it cannot be set up", () => {
     const { o, errors } = options("addr_test1notanaddress");
-    expect(tryCreateResultSubmitter(o)).toBeNull();
-    expect(errors[0]).toMatch(/^Escrow result submission disabled: /);
+    expect(tryCreateSellerChain(o)).toBeNull();
+    expect(errors[0]).toMatch(/^Escrow result submission and release disabled: /);
     expect(errors[0]).not.toContain(o.sellerMnemonic.split(" ")[0]);
   });
 
@@ -70,15 +63,34 @@ describe("setting up the submitter", () => {
     const { o, errors } = options(
       "addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g",
     );
-    expect(tryCreateResultSubmitter(o)).toBeNull();
+    expect(tryCreateSellerChain(o)).toBeNull();
     expect(errors[0]).toContain("must be a key address");
   });
 
   it("builds offline from a valid seller key address", () => {
-    const { o } = options(
-      // Seller A's public payout address on preprod (README): a key address.
-      "addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga",
-    );
-    expect(typeof tryCreateResultSubmitter(o)).toBe("function");
+    const { o } = options(SELLER_A);
+    const chain = tryCreateSellerChain(o);
+    expect(chain?.sellerAddress).toBe(SELLER_A);
+    expect(typeof (chain && createResultSubmitter({ chain }))).toBe("function");
+  });
+
+  it("runs seller transactions one at a time, whatever the previous one did", async () => {
+    const { o } = options(SELLER_A);
+    const chain = createSellerChain(o);
+    const order: string[] = [];
+    const task =
+      (name: string, ms: number, fail = false) =>
+      async () => {
+        order.push(`${name} start`);
+        await new Promise((resolve) => setTimeout(resolve, ms));
+        order.push(`${name} end`);
+        if (fail) throw new Error(name);
+        return name;
+      };
+    const a = chain.enqueue(task("a", 30, true));
+    const b = chain.enqueue(task("b", 1));
+    await expect(a).rejects.toThrow("a");
+    await expect(b).resolves.toBe("b");
+    expect(order).toEqual(["a start", "a end", "b start", "b end"]);
   });
 });

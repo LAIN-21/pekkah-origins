@@ -320,7 +320,7 @@ Acceptance:
 - **`apps/market/src/escrow-release.ts`** (new, beside `result-submit.ts`). It reuses that file's Evolution client, `masumiValidator()`, collateral reserve and submit queue. It adds a dry-run mode (build and evaluate, no signature) for tests and the endpoint below. The Withdraw transaction:
   - **Input:** the escrow UTxO after SubmitResult. Its datum comes from `parseMasumiLockDatum`. Refuse unless the state is ResultSubmitted, the seller is Seller A, and now is past `unlock_time`.
   - **Redeemer:** `Data.constr(0n, [])`.
-  - **Buyer output:** to `buyer_return_address ?? buyer`, rebuilt exactly, with its stake key. It carries all of the escrow's lovelace (at least `collateral_return_lovelace`) and the inline datum `Constr 0 [lock tx hash, output index]`.
+  - **Buyer output:** to `buyer_return_address ?? buyer`, rebuilt exactly, with its stake key. It carries all of the escrow's lovelace (at least `collateral_return_lovelace`) and the inline datum `Constr 0 [tx hash, output index]` of the UTxO it spends. After SubmitResult, that's the SubmitResult transaction's escrow output, not the lock's (the spike confirmed it against the validator).
   - **Seller output:** the tUSDM to Seller A, with the same tag. Its min-ADA comes from Seller A's UTxOs, never from the collateral reserve.
   - **Signer and validity:** `addSigner(seller)`. Valid from `unlock_time` + 1 s to now + 180 s.
   - **Safety:** `build()` evaluates the script before anything is signed.

@@ -9,13 +9,20 @@ import {
   scenarioRequest,
 } from "@pekkah/protocol";
 import { createLogger } from "@pekkah/runtime";
-import { masumiEscrowAddress, toMasumiSellerSigner } from "@x402/cardano";
+import {
+  MASUMI_MIN_PAY_TO_SUBMIT_MS,
+  MASUMI_MIN_SUBMIT_RESULT_LEAD_MS,
+  MASUMI_MIN_SUBMIT_TO_UNLOCK_MS,
+  MASUMI_MIN_UNLOCK_TO_DISPUTE_MS,
+  masumiEscrowAddress,
+  toMasumiSellerSigner,
+} from "@x402/cardano";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { parametersInputHash } from "../../../packages/payments/src/server.js";
+import { MASUMI_DEADLINES, parametersInputHash } from "../../../packages/payments/src/server.js";
 import { buildTestTx } from "../../../packages/payments/src/test-support/cardano-tx.js";
 import { txHashFromPayload } from "../../../packages/payments/src/tx.js";
 import { throwawayMnemonic } from "../../../packages/runtime/src/test-support/mnemonic.js";
@@ -254,6 +261,31 @@ describe("POST /api/escrow-jobs/:offerId", () => {
     expect(extra.terms.inputHash).toBe(extra.inputCommitment.digest);
     // Anyone can recompute it from the request alone (demo-check does).
     expect(extra.terms.inputHash).toBe(parametersInputHash(scenarioRequest("fractal-escrow")));
+    // PR-16's deadlines: submit 6, unlock 21.5 and dispute 37 minutes after pay-by, which is
+    // the 402 plus 600 s. Each gap clears the library's minimum by at least 30 s.
+    const payBy = Number(extra.terms.payByTime);
+    const after = (t: string) => Number(t) - payBy;
+    expect(after(extra.terms.submitResultTime)).toBe(MASUMI_DEADLINES.submitResultAfterPayByMs);
+    expect(after(extra.terms.unlockTime)).toBe(MASUMI_DEADLINES.unlockAfterPayByMs);
+    expect(after(extra.terms.externalDisputeUnlockTime)).toBe(
+      MASUMI_DEADLINES.externalDisputeUnlockAfterPayByMs,
+    );
+    const issued = payBy - 600_000;
+    expect(Math.abs(issued - Date.now())).toBeLessThan(60_000);
+    const margin = 30_000;
+    const submit = Number(extra.terms.submitResultTime);
+    const unlock = Number(extra.terms.unlockTime);
+    const dispute = Number(extra.terms.externalDisputeUnlockTime);
+    expect(submit - payBy).toBeGreaterThanOrEqual(Number(MASUMI_MIN_PAY_TO_SUBMIT_MS) + margin);
+    expect(unlock - submit).toBeGreaterThanOrEqual(Number(MASUMI_MIN_SUBMIT_TO_UNLOCK_MS) + margin);
+    expect(dispute - unlock).toBeGreaterThanOrEqual(
+      Number(MASUMI_MIN_UNLOCK_TO_DISPUTE_MS) + margin,
+    );
+    expect(submit - issued).toBeGreaterThanOrEqual(
+      Number(MASUMI_MIN_SUBMIT_RESULT_LEAD_MS) + margin,
+    );
+    // The unlock comes about 31.5 minutes after the 402.
+    expect(unlock - issued).toBe(31.5 * 60_000);
     const requiredEvent = events.find(
       (e) => e.type === "payment.required" && e.data.offerId === offer.offerId,
     );

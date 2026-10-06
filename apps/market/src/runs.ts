@@ -73,6 +73,35 @@ export class RunStore {
     return this.latestRunId ? this.get(this.latestRunId) : undefined;
   }
 
+  /** Every run kept, oldest first (the release scheduler reads them at startup). */
+  all(): RunLog[] {
+    return [...this.runs.values()].map((run) => ({ ...run, events: [...run.events] }));
+  }
+
+  /** The run that holds an escrow lock, from its escrow.locked event, and its release if seen. */
+  findLock(
+    lockTxHash: string,
+  ): { runId: string; jobId?: string; unlockTime: number; releasedTxHash?: string } | undefined {
+    for (const run of this.runs.values()) {
+      const locked = run.events.find(
+        (e): e is Extract<JobEvent, { type: "escrow.locked" }> =>
+          e.type === "escrow.locked" && e.data.txHash === lockTxHash,
+      );
+      if (!locked) continue;
+      const released = run.events.find(
+        (e): e is Extract<JobEvent, { type: "escrow.released" }> =>
+          e.type === "escrow.released" && e.data.lockTxHash === lockTxHash,
+      );
+      return {
+        runId: run.runId,
+        ...(locked.jobId ? { jobId: locked.jobId } : {}),
+        unlockTime: Number(locked.data.unlockTime),
+        ...(released ? { releasedTxHash: released.data.txHash } : {}),
+      };
+    }
+    return undefined;
+  }
+
   /**
    * A run under way right now, hosted or not (the MCP's, the CLI's): it started (a run.started,
    * which only the agent's token can post; a bare quote with a run id never counts), its latest

@@ -15,13 +15,16 @@ import {
   registerSmokeRoute,
 } from "./dev.js";
 import { escrowCommitment } from "./escrow.js";
+import { createEscrowReleaser } from "./escrow-release.js";
+import { registerEscrowReleaseRoute } from "./escrow-release-route.js";
 import { EventBus } from "./events.js";
 import { JobStore } from "./jobs.js";
 import { OfferStore } from "./offers.js";
 import { registerPaidJobRoute } from "./paid.js";
 import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
-import { tryCreateResultSubmitter } from "./result-submit.js";
+import { pendingReleases, ReleaseScheduler } from "./release-scheduler.js";
+import { createResultSubmitter, tryCreateSellerChain } from "./result-submit.js";
 import { registerAgentEvents, registerReadRoutes } from "./routes.js";
 import { RunStore } from "./runs.js";
 import { UiHub } from "./ui.js";
@@ -83,28 +86,43 @@ bus.subscribe((event) => {
   const job = jobs.get(event.jobId);
   if (job?.status === "dispatched") job.status = "running";
 });
-// PR-10b: with Masumi on, the market submits each escrow job's result hash as Seller A, with
-// the key it already holds to sign the escrow terms. Chain access goes through the facilitator.
-const submitResult =
+// PR-10b and PR-16: with Masumi on, the market submits each escrow job's result hash as
+// Seller A, with the key it already holds to sign the escrow terms, and releases the escrow
+// after its unlock. Chain access goes through the facilitator; one queue for both.
+const sellerChain =
   seller && env.SELLER_A_MNEMONIC && env.SELLER_A_ADDRESS
-    ? tryCreateResultSubmitter({
+    ? tryCreateSellerChain({
         chainUrl: `${env.FACILITATOR_URL.replace(/\/+$/, "")}/blockfrost`,
         sellerMnemonic: assertMnemonic("SELLER_A_MNEMONIC", env.SELLER_A_MNEMONIC),
         sellerAddress: env.SELLER_A_ADDRESS,
         log,
       })
     : null;
-const escrowResults = submitResult
-  ? {
-      submit: submitResult,
-      txFound: async (txHash: string) => {
-        const res = await fetch(`${env.FACILITATOR_URL.replace(/\/+$/, "")}/tx/${txHash}`, {
-          signal: AbortSignal.timeout(20_000),
-        });
-        return res.ok && ((await res.json()) as { found?: boolean }).found === true;
-      },
-    }
+const txFound = async (txHash: string) => {
+  const res = await fetch(`${env.FACILITATOR_URL.replace(/\/+$/, "")}/tx/${txHash}`, {
+    signal: AbortSignal.timeout(20_000),
+  });
+  return res.ok && ((await res.json()) as { found?: boolean }).found === true;
+};
+const escrowResults = sellerChain
+  ? { submit: createResultSubmitter({ chain: sellerChain }), txFound }
   : undefined;
+const release = sellerChain ? createEscrowReleaser({ chain: sellerChain }) : null;
+const releases = release
+  ? new ReleaseScheduler({
+      release: (lockTxHash) => release(lockTxHash),
+      txFound,
+      emit: (event) => void bus.emit(event),
+      log,
+      // A fresh market gives the facilitator a moment before the first release.
+      minDelayMs: 10_000,
+    })
+  : null;
+if (releases) {
+  // Releases saved runs still owe (say, after a restart), then every new submitted result.
+  for (const pending of pendingReleases(runs.all())) releases.add(pending);
+  bus.subscribe((event) => releases.observe(event));
+}
 const payments = createMarketPayments(
   {
     facilitatorUrl: env.FACILITATOR_URL,
@@ -176,6 +194,14 @@ const app = createApp({
     registerReadRoutes(app, { jobs, runs, facilitatorUrl: env.FACILITATOR_URL, log });
     registerAgentEvents(app, bearerGuard(env.AGENT_TOKEN), bus);
     registerDemoRoute(app, demo, env.DEMO_TOKEN);
+    if (releases && release && env.DEMO_TOKEN) {
+      registerEscrowReleaseRoute(app, bearerGuard(env.DEMO_TOKEN), {
+        releases,
+        release,
+        runs,
+        log,
+      });
+    }
     if (env.PEKKAH_DEV_ROUTES && env.DEMO_TOKEN) {
       const guard = bearerGuard(env.DEMO_TOKEN);
       const common = {
@@ -200,6 +226,7 @@ const server = app.listen(env.MARKET_PORT, () => {
       devRoutes: env.PEKKAH_DEV_ROUTES,
       sellers: Object.keys(sellers),
       masumi: seller ? { seller: seller.sellerAddress } : false,
+      releases: releases ? releases.pending().length : "off",
       facilitator: env.FACILITATOR_URL,
     },
     "market listening",
@@ -220,6 +247,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     log.info({ signal }, "market stopping");
     demo.close();
+    releases?.close();
     ui.close();
     registry.close();
     server.close(() => process.exit(0));

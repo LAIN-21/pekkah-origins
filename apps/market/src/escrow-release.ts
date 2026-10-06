@@ -6,6 +6,7 @@ import {
   KeyHash,
   ScriptHash,
   TransactionHash,
+  TransactionInput,
   type UTxO,
 } from "@evolution-sdk/evolution";
 import { largestFirstSelection } from "@evolution-sdk/evolution/sdk/builders/CoinSelection";
@@ -19,7 +20,7 @@ import {
   parseMasumiLockDatum,
 } from "@x402/cardano";
 import { masumiValidator } from "./masumi-validator.js";
-import { collateralReserve, type SellerClient } from "./result-submit.js";
+import { collateralReserve, type SellerChain, type SellerClient } from "./result-submit.js";
 
 // Masumi's Withdraw (PR-16, vested_pay V2): after unlock_time, Seller A collects the price and
 // the buyer's collateral goes back to the buyer, both in one transaction.
@@ -32,21 +33,19 @@ const RESULT_SUBMITTED = 1n;
 const VALID_FOR_MS = 180_000;
 /** The validity range starts this long after unlock_time, which covers slot rounding. */
 const AFTER_UNLOCK_MS = 1_000n;
+/** A lock is followed through at most this many spends (SubmitResult is the only one today). */
+const MAX_HOPS = 6;
 
-export interface ReleaseInput {
-  /** The escrow UTxO to spend: after SubmitResult it is that transaction's escrow output. */
-  txHash: string;
-  outputIndex: number;
-}
-
+/** What a release pays, read from the escrow output and its datum. */
 export interface ReleasePlan {
   buyerAddress: string;
   sellerAddress: string;
-  /** Every non-ADA unit in the escrow goes to the seller. */
-  assets: Record<string, string>;
-  collateralReturnLovelace: string;
-  /** All of the escrow's lovelace, which goes back to the buyer. */
+  /** The escrow's token: `policy.name`, as PEKKAH_ASSET. */
+  asset: string;
+  amountAtomic: string;
+  /** All of the escrow's lovelace, back to the buyer: at least the collateral. */
   buyerLovelace: string;
+  collateralReturnLovelace: string;
   unlockTime: number;
 }
 
@@ -56,9 +55,10 @@ export type BuiltRelease =
       plan: ReleasePlan;
       feeLovelace: string;
       exUnits: { mem: string; steps: string }[];
-      sign: () => Promise<string>;
+      /** Signs and submits; returns the transaction hash. */
+      submit: () => Promise<string>;
     }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; retry: boolean };
 
 function credential(c: MasumiCredential): KeyHash.KeyHash | ScriptHash.ScriptHash {
   return c.isScript ? ScriptHash.fromHex(c.hash) : KeyHash.fromHex(c.hash);
@@ -86,56 +86,60 @@ function sameCredentials(a: MasumiAddressCredentials, b: MasumiAddressCredential
   );
 }
 
-/** vested_pay tags each output it counts with the spent UTxO's reference: the Plutus V3
- * `OutputReference`, `Constr 0 [tx hash bytes, output index]`. */
+/** vested_pay counts an output only when its inline datum is the spent UTxO's reference: the
+ * Plutus V3 `OutputReference`, `Constr 0 [tx hash bytes, output index]`. */
 export function outputReferenceTag(txHash: string, outputIndex: number): Data.Constr {
   return Data.constr(0n, [Data.bytearray(txHash), Data.int(BigInt(outputIndex))]);
 }
 
+/** `policy` + `name` hex, as the SDK spells a unit, to `policy.name`. */
+const assetId = (unit: string) => `${unit.slice(0, 56)}.${unit.slice(56)}`;
+
 /**
  * Builds and evaluates the Withdraw for one escrow UTxO, without signing it. Refuses unless the
  * escrow is ResultSubmitted, its seller is Seller A and its unlock time has passed. The buyer
- * gets all of the escrow's lovelace (at least the collateral); Seller A gets the tokens, with
- * their min-ADA and the fee paid from its own UTxOs, never from the collateral reserve.
+ * gets all of the escrow's lovelace (at least the collateral); Seller A gets the token, with
+ * its min-ADA and the fee paid from Seller A's other UTxOs, never from the collateral reserve.
  */
 export async function buildRelease(
   client: SellerClient,
   utxo: UTxO.UTxO,
-  input: ReleaseInput,
   o: { sellerAddress: string; now: () => number },
 ): Promise<BuiltRelease> {
+  const refuse = (reason: string) => ({ ok: false as const, reason, retry: false });
   if (Address.toBech32(utxo.address) !== masumiEscrowAddress(NETWORK)) {
-    return { ok: false, reason: "the output is not at the Masumi escrow address" };
+    return refuse("the output is not at the Masumi escrow address");
   }
   if (!(utxo.datumOption instanceof InlineDatum.InlineDatum)) {
-    return { ok: false, reason: "the escrow output has no inline datum" };
+    return refuse("the escrow output has no inline datum");
   }
   const view = parseMasumiLockDatum(utxo.datumOption.data);
-  if (!view) return { ok: false, reason: "the escrow datum is malformed" };
+  if (!view) return refuse("the escrow datum is malformed");
   if (view.state !== RESULT_SUBMITTED) {
-    return { ok: false, reason: `the escrow is in state ${view.state}, not ResultSubmitted` };
+    return refuse(`the escrow is in state ${view.state}, not ResultSubmitted`);
   }
   const seller = addressCredentials(o.sellerAddress);
-  if (!sameCredentials(view.seller, seller)) {
-    return { ok: false, reason: "the escrow's seller is not Seller A" };
-  }
-  if (view.sellerReturnAddress) {
-    return { ok: false, reason: "the escrow names a seller return address" };
-  }
-  const from = view.unlockTime + AFTER_UNLOCK_MS;
-  if (BigInt(o.now()) < from) return { ok: false, reason: "the escrow is not unlocked yet" };
+  if (!sameCredentials(view.seller, seller)) return refuse("the escrow's seller is not Seller A");
+  if (view.sellerReturnAddress) return refuse("the escrow names a seller return address");
   const escrowLovelace = Assets.lovelaceOf(utxo.assets);
   if (escrowLovelace < view.collateralReturnLovelace) {
-    return { ok: false, reason: "the escrow holds less lovelace than the collateral" };
+    return refuse("the escrow holds less lovelace than the collateral");
+  }
+  const tokens = Assets.withoutLovelace(utxo.assets);
+  const units = Assets.getUnits(tokens).filter((unit) => unit !== "lovelace");
+  const [unit] = units;
+  if (!unit || units.length !== 1) return refuse("the escrow does not hold exactly one token");
+  const from = view.unlockTime + AFTER_UNLOCK_MS;
+  if (BigInt(o.now()) < from) {
+    return { ok: false, reason: "the escrow is not unlocked yet", retry: true };
   }
   const buyer = addressFromCredentials(view.buyerReturnAddress ?? view.buyer);
-  const sellerAddress = Address.fromBech32(o.sellerAddress);
-  const tokens = Assets.withoutLovelace(utxo.assets);
-  const tag = inlineDatum(outputReferenceTag(input.txHash, input.outputIndex));
+  const tag = inlineDatum(
+    outputReferenceTag(TransactionHash.toHex(utxo.transactionId), Number(utxo.index)),
+  );
 
-  const wallet = await client.getWalletUtxos();
-  const reserve = collateralReserve(wallet);
-  if (!reserve.ok) return reserve;
+  const reserve = collateralReserve(await client.getWalletUtxos());
+  if (!reserve.ok) return { ...reserve, retry: true };
   const built = await client
     .newTx()
     .collectFrom({ inputs: [utxo], redeemer: Data.constr(WITHDRAW, []) })
@@ -146,38 +150,215 @@ export async function buildRelease(
       datum: tag,
       autoMinUtxo: false,
     })
-    .payToAddress({ address: sellerAddress, assets: tokens, datum: tag, autoMinUtxo: true })
+    .payToAddress({
+      address: Address.fromBech32(o.sellerAddress),
+      assets: tokens,
+      datum: tag,
+      autoMinUtxo: true,
+    })
     .addSigner({ keyHash: KeyHash.fromHex(seller.payment.hash) })
     .setValidity({ from, to: BigInt(o.now() + VALID_FOR_MS) })
     .build({
+      // Exactly the reserve's lovelace: the SDK takes the largest pure-ADA UTxO first, so the
+      // collateral is the reserve alone and needs no return output.
       setCollateral: Assets.lovelaceOf(reserve.utxo.assets),
       coinSelection: (available, required) =>
         largestFirstSelection(available.filter(reserve.isNot), required),
     });
   const tx = await built.toTransaction();
-  const redeemers = tx.witnessSet.redeemers?.toArray() ?? [];
-  const assets: Record<string, string> = {};
-  for (const unit of Assets.getUnits(tokens)) {
-    if (unit !== "lovelace") assets[unit] = Assets.getByUnit(tokens, unit).toString();
-  }
   return {
     ok: true,
     plan: {
       buyerAddress: Address.toBech32(buyer),
       sellerAddress: o.sellerAddress,
-      assets,
-      collateralReturnLovelace: view.collateralReturnLovelace.toString(),
+      asset: assetId(unit),
+      amountAtomic: Assets.getByUnit(tokens, unit).toString(),
       buyerLovelace: escrowLovelace.toString(),
+      collateralReturnLovelace: view.collateralReturnLovelace.toString(),
       unlockTime: Number(view.unlockTime),
     },
     feeLovelace: tx.body.fee.toString(),
-    exUnits: redeemers.map((r) => ({
+    exUnits: (tx.witnessSet.redeemers?.toArray() ?? []).map((r) => ({
       mem: r.exUnits.mem.toString(),
       steps: r.exUnits.steps.toString(),
     })),
-    sign: async () => {
+    submit: async () => {
       const signed = await built.sign();
       return TransactionHash.toHex(await signed.submit()).toLowerCase();
     },
   };
 }
+
+/** One transaction's outputs as the chain passthrough returns them (Blockfrost). */
+export interface ChainTxUtxos {
+  outputs: {
+    address: string;
+    output_index: number;
+    amount: { unit: string; quantity: string }[];
+    inline_datum: string | null;
+    consumed_by_tx?: string | null;
+  }[];
+}
+
+export type EscrowLocation =
+  | { kind: "open"; txHash: string; outputIndex: number }
+  /** The escrow left the contract in `spentBy`; `last` is the output that transaction spent. */
+  | { kind: "closed"; spentBy: string; last: ChainTxUtxos["outputs"][number] }
+  | { kind: "unknown"; reason: string };
+
+/**
+ * Where a lock's escrow sits now. It follows the escrow output from the lock through every
+ * spend that keeps it at the escrow address (SubmitResult does), matching the datum's
+ * reference signature, which each continuation keeps.
+ */
+export async function locateEscrow(
+  txUtxos: (txHash: string) => Promise<ChainTxUtxos | null>,
+  lockTxHash: string,
+): Promise<EscrowLocation> {
+  const escrow = masumiEscrowAddress(NETWORK);
+  let txHash = lockTxHash;
+  let signature: string | undefined;
+  let previous: ChainTxUtxos["outputs"][number] | undefined;
+  for (let hop = 0; hop < MAX_HOPS; hop++) {
+    const utxos = await txUtxos(txHash);
+    if (!utxos) return { kind: "unknown", reason: `transaction ${txHash} is not on chain yet` };
+    const output = utxos.outputs.find((out) => {
+      if (out.address !== escrow || !out.inline_datum) return false;
+      const view = parseMasumiLockDatum(out.inline_datum);
+      return view !== null && (signature === undefined || view.referenceSignature === signature);
+    });
+    if (!output) {
+      if (!previous) return { kind: "unknown", reason: "the transaction has no escrow output" };
+      return { kind: "closed", spentBy: txHash, last: previous };
+    }
+    signature ??= parseMasumiLockDatum(output.inline_datum as string)?.referenceSignature;
+    if (!output.consumed_by_tx) {
+      return { kind: "open", txHash, outputIndex: output.output_index };
+    }
+    previous = output;
+    txHash = output.consumed_by_tx;
+  }
+  return { kind: "unknown", reason: "the escrow moved more often than a lock should" };
+}
+
+/**
+ * Whether the transaction that closed an escrow was its release: Seller A received the escrow's
+ * token and the buyer at least the collateral. Read from the chain, so a release that landed
+ * while the market was down still counts, and a refund never does.
+ */
+export async function releaseOf(
+  txUtxos: (txHash: string) => Promise<ChainTxUtxos | null>,
+  closed: Extract<EscrowLocation, { kind: "closed" }>,
+  sellerAddress: string,
+): Promise<ReleasePlan | null> {
+  const view = closed.last.inline_datum ? parseMasumiLockDatum(closed.last.inline_datum) : null;
+  const token = closed.last.amount.find((a) => a.unit !== "lovelace");
+  const tx = await txUtxos(closed.spentBy);
+  if (!view || !token || !tx) return null;
+  const buyerAddress = Address.toBech32(
+    addressFromCredentials(view.buyerReturnAddress ?? view.buyer),
+  );
+  const toSeller = tx.outputs.find(
+    (out) =>
+      out.address === sellerAddress &&
+      out.amount.some((a) => a.unit === token.unit && BigInt(a.quantity) >= BigInt(token.quantity)),
+  );
+  const toBuyer = tx.outputs.find(
+    (out) =>
+      out.address === buyerAddress &&
+      out.amount.some(
+        (a) => a.unit === "lovelace" && BigInt(a.quantity) >= view.collateralReturnLovelace,
+      ),
+  );
+  if (!toSeller || !toBuyer) return null;
+  return {
+    buyerAddress,
+    sellerAddress,
+    asset: assetId(token.unit),
+    amountAtomic: token.quantity,
+    buyerLovelace: toBuyer.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0",
+    collateralReturnLovelace: view.collateralReturnLovelace.toString(),
+    unlockTime: Number(view.unlockTime),
+  };
+}
+
+export type ReleaseOutcome =
+  | {
+      ok: true;
+      dryRun: boolean;
+      /** Empty for a dry run. */
+      txHash: string;
+      plan: ReleasePlan;
+      feeLovelace: string;
+      exUnits: { mem: string; steps: string }[];
+    }
+  | {
+      ok: false;
+      reason: string;
+      /** Worth trying again later: the chain was unreachable, or the unlock is still ahead. */
+      retry: boolean;
+      /** The escrow was already released, in this transaction (seen on chain). */
+      releasedIn?: { txHash: string; plan: ReleasePlan };
+    };
+
+/**
+ * Releases escrows as Seller A, one transaction at a time with result submissions. A dry run
+ * builds and evaluates the Withdraw and signs nothing.
+ */
+export function createEscrowReleaser(o: { chain: SellerChain; now?: () => number }) {
+  const now = o.now ?? Date.now;
+  const { chain } = o;
+  const base = chain.chainUrl.replace(/\/+$/, "");
+
+  async function txUtxos(txHash: string): Promise<ChainTxUtxos | null> {
+    const res = await fetch(`${base}/txs/${txHash}/utxos`, { signal: AbortSignal.timeout(20_000) });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`the chain answered ${res.status}`);
+    return (await res.json()) as ChainTxUtxos;
+  }
+
+  async function run(lockTxHash: string, dryRun: boolean): Promise<ReleaseOutcome> {
+    const where = await locateEscrow(txUtxos, lockTxHash);
+    if (where.kind === "unknown") return { ok: false, reason: where.reason, retry: true };
+    if (where.kind === "closed") {
+      const plan = await releaseOf(txUtxos, where, chain.sellerAddress);
+      return {
+        ok: false,
+        reason: `the escrow was already spent, by ${where.spentBy}`,
+        retry: false,
+        ...(plan ? { releasedIn: { txHash: where.spentBy, plan } } : {}),
+      };
+    }
+    const ref = new TransactionInput.TransactionInput({
+      transactionId: TransactionHash.fromHex(where.txHash),
+      index: BigInt(where.outputIndex),
+    });
+    const [utxo] = await chain.client.getUtxosByOutRef([ref]);
+    if (!utxo) return { ok: false, reason: "the escrow output is not visible", retry: true };
+    const built = await buildRelease(chain.client, utxo, {
+      sellerAddress: chain.sellerAddress,
+      now,
+    });
+    if (!built.ok) return built;
+    const { plan, feeLovelace, exUnits } = built;
+    if (dryRun) return { ok: true, dryRun: true, txHash: "", plan, feeLovelace, exUnits };
+    const txHash = await built.submit();
+    return { ok: true, dryRun: false, txHash, plan, feeLovelace, exUnits };
+  }
+
+  /** Never throws: a failure is an outcome. A build or evaluation error submits nothing. */
+  return function release(
+    lockTxHash: string,
+    options: { dryRun?: boolean } = {},
+  ): Promise<ReleaseOutcome> {
+    return chain.enqueue(() =>
+      run(lockTxHash, options.dryRun === true).catch((err: unknown) => ({
+        ok: false as const,
+        reason: err instanceof Error ? err.message : String(err),
+        retry: true,
+      })),
+    );
+  };
+}
+
+export type EscrowReleaser = ReturnType<typeof createEscrowReleaser>;
