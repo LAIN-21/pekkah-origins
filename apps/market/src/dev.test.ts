@@ -17,6 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { bearerGuard, registerSmokeEscrowRoute, registerSmokeRoute } from "./dev.js";
 import { EventBus } from "./events.js";
+import { JobStore } from "./jobs.js";
+import { OfferStore } from "./offers.js";
 import { createMarketPayments } from "./payments.js";
 
 const TOKEN = "t".repeat(32);
@@ -55,6 +57,7 @@ async function start(devRoutes: boolean, masumi?: MasumiSellerSigner): Promise<s
     { facilitator: inProcessFacilitator(), ...(masumi ? { masumi: { seller: masumi } } : {}) },
     bus,
     log,
+    { jobs: new JobStore(), offers: new OfferStore() },
   );
   const app = createApp({
     version: "0.1.0",

@@ -14,7 +14,8 @@
     "format": "biome check --write .",
     "secrets:scan": "bash scripts/secrets-scan.sh",
     "calib:ref": "tsx scripts/calib-ref.ts",
-    "measure": "tsx scripts/measure.ts"
+    "measure": "tsx scripts/measure.ts",
+    "agent": "pnpm --filter @pekkah/agent start"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

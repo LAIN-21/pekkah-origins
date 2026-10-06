@@ -43,7 +43,8 @@ export interface BuyerConfig {
   /** PEKKAH_ASSET. */
   asset: string;
   caps: { perPaymentUsd: number; perRunUsd: number; perDayUsd: number };
-  onEvent?: (event: BuyerEvent) => void;
+  /** Awaited (up to 5 s) before the paid retry, so the event lands before the payment does. */
+  onEvent?: (event: BuyerEvent) => void | Promise<void>;
 }
 
 export interface BuyerEvent {
@@ -161,7 +162,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
     pending.paymentHeader = http.encodePaymentSignatureHeader(paymentPayload)["PAYMENT-SIGNATURE"];
     ledger.record(pending.runId, paymentPayload.accepted.amount);
     try {
-      config.onEvent?.({
+      const reported = config.onEvent?.({
         type: "payment.signed",
         runId: pending.runId,
         data: {
@@ -172,6 +173,9 @@ export function createBuyer(config: BuyerConfig): Buyer {
           ...(pending.offerId ? { offerId: pending.offerId } : {}),
         },
       });
+      if (reported) {
+        await Promise.race([reported, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+      }
     } catch {
       // Reporting never blocks a payment.
     }

@@ -90,6 +90,13 @@ export class PaymentOperations<T = unknown> {
     return this.byKey.get(key);
   }
 
+  /** The txHash that still holds a key: a claim past its lease holds nothing. */
+  activeHolder(key: string): string | undefined {
+    const txHash = this.byKey.get(key);
+    const record = txHash ? this.byTx.get(txHash) : undefined;
+    return record && !this.expired(record) ? txHash : undefined;
+  }
+
   /**
    * Binds a txHash to the resource it pays for. Idempotent for the same txHash, key and
    * payload; a different transaction for a claimed key is refused.

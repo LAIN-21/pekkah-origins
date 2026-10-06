@@ -32,6 +32,8 @@ export type DispatchRequest = (
 ) & {
   kind: JobKind;
   deadlineSec: number;
+  /** Chosen by the caller when it must know the id before dispatch (paid jobs). */
+  jobId?: string;
   runId?: string;
   offerId?: string;
   txHash?: string;
@@ -414,7 +416,7 @@ export class WorkerRegistry {
 
   /** Runs one job on a worker and resolves with its result; never rejects. */
   dispatch(workerId: string, request: DispatchRequest): Promise<JobOutcome> {
-    const jobId = nextJobId();
+    const jobId = request.jobId ?? nextJobId();
     const entry = this.workers.get(workerId);
     const refused = (error: string): Promise<JobOutcome> =>
       Promise.resolve({ ok: false, jobId, workerId, error, durationMs: 0 });
@@ -491,6 +493,12 @@ export class WorkerRegistry {
 
   isConnected(workerId: string): boolean {
     return this.workers.get(workerId)?.socket != null;
+  }
+
+  /** Connected, trusted, not calibrating and not running a job: it can take a paid job now. */
+  isAvailable(workerId: string): boolean {
+    const entry = this.workers.get(workerId);
+    return entry !== undefined && this.statusOf(entry) === "online";
   }
 
   // Reads ------------------------------------------------------------------------------

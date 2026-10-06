@@ -309,6 +309,9 @@ export function attachPaymentHooks(
       return;
     }
     if (operations.holder(record.key) !== txHash) return;
+    // A replay of a settled payment can still fail (its job trimmed, say), but the payment
+    // stands: it is never reported as cancelled.
+    if (record.settle?.success) return;
     operations.markCanceled(txHash, ctx.reason);
     if (!operations.firstTime(txHash, "canceled")) return;
     await safely("onCanceled", () =>
