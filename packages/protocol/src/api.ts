@@ -71,6 +71,8 @@ export const RunLog = z.object({
   runId: Id,
   scenario: RunScenario.optional(),
   startedAt: IsoDate.optional(),
+  /** The run's latest event, even one past the replay cap (the market keeps 500 per run). */
+  lastEventAt: IsoDate.optional(),
   events: z.array(JobEvent),
 });
 export type RunLog = z.infer<typeof RunLog>;

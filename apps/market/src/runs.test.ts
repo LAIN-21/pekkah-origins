@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type JobEventInput, scenarioRequest } from "@pekkah/protocol";
 import { createLogger } from "@pekkah/runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventBus } from "./events.js";
 import { LIVE_RUN_WINDOW_MS, RunStore } from "./runs.js";
 
@@ -65,6 +65,50 @@ describe("a run under way (the run button's 409)", () => {
       },
     });
     expect(runs.liveRun(Date.now())).toBeUndefined();
+  });
+
+  it("never counts a run that did not start: a run id from a quote alone is not a run", () => {
+    const bus = new EventBus(log);
+    const runs = new RunStore(bus, null, log);
+    // Anyone can send X-Pekkah-Run-Id with a quote; only the agent's token posts run.started.
+    bus.emit({
+      source: "market",
+      type: "job.progress",
+      runId: runId(94),
+      jobId: "01JOB",
+      data: { workerId: "B", pct: 5 },
+    });
+    expect(runs.liveRun(Date.now())).toBeUndefined();
+  });
+
+  it("stays live past the replay cap, and after a restart", () => {
+    const T0 = Date.parse("2026-10-07T02:00:00Z");
+    vi.useFakeTimers({ now: T0 });
+    try {
+      const dir = tempDir();
+      const bus = new EventBus(log);
+      const runs = new RunStore(bus, dir, log);
+      const progress = (pct: number): JobEventInput => ({
+        source: "worker",
+        type: "job.progress",
+        runId: runId(93),
+        jobId: "01JOB",
+        data: { workerId: "B", pct },
+      });
+      bus.emit(started(93));
+      for (let i = 0; i < 520; i++) bus.emit(progress(i % 100));
+      // Three minutes on, the run still reports progress, past the replay cap.
+      vi.setSystemTime(T0 + 3 * 60_000);
+      bus.emit(progress(50));
+      expect(runs.get(runId(93))?.events).toHaveLength(500);
+      expect(runs.liveRun(Date.now())).toBe(runId(93));
+      vi.advanceTimersByTime(600);
+      const reloaded = new RunStore(new EventBus(log), dir, log);
+      expect(reloaded.get(runId(93))?.lastEventAt).toBe(new Date(T0 + 3 * 60_000).toISOString());
+      expect(reloaded.liveRun(Date.now())).toBe(runId(93));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores dev events and runs that only failed", () => {

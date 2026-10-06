@@ -16,6 +16,8 @@ interface Run {
   runId: string;
   scenario?: RunScenario;
   startedAt?: string;
+  /** Kept past the replay cap, so a long run still counts as under way. */
+  lastEventAt?: string;
   events: JobEvent[];
 }
 
@@ -53,6 +55,7 @@ export class RunStore {
     }
     // A run's outcome is always kept, even past the cap: a replay must show how it ended.
     if (run.events.length < MAX_EVENTS_PER_RUN || isOutcome(event)) run.events.push(event);
+    run.lastEventAt = event.ts;
     if (event.type === "run.started") {
       run.scenario = event.data.scenario;
       run.startedAt = event.ts;
@@ -71,15 +74,16 @@ export class RunStore {
   }
 
   /**
-   * A run under way right now, hosted or not (the MCP's, the CLI's): its last event is at most
-   * `windowMs` old and it has no run.completed or run.failed. Events after the outcome (an
-   * escrow's result or release) never make a run live again.
+   * A run under way right now, hosted or not (the MCP's, the CLI's): it started (a run.started,
+   * which only the agent's token can post; a bare quote with a run id never counts), its latest
+   * event is at most `windowMs` old, and it has no run.completed or run.failed. Events after the
+   * outcome (an escrow's result or release) never make a run live again.
    */
   liveRun(now: number, windowMs = LIVE_RUN_WINDOW_MS): string | undefined {
     for (const run of this.runs.values()) {
-      const last = run.events.at(-1);
-      if (!last || run.events.some(isOutcome)) continue;
-      if (now - Date.parse(last.ts) <= windowMs) return run.runId;
+      const last = run.lastEventAt ?? run.events.at(-1)?.ts;
+      if (!run.startedAt || !last || run.events.some(isOutcome)) continue;
+      if (now - Date.parse(last) <= windowMs) return run.runId;
     }
     return undefined;
   }
