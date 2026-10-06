@@ -29,7 +29,11 @@ export function PaymentPanel({ run, name }: Props) {
   if (run.attempts.length === 0) return null;
   return (
     <div className="card">
-      <h3>How my agent paid</h3>
+      <h3>
+        {run.attempts.some(isEscrow)
+          ? "How my agent locked the payment in escrow"
+          : "How my agent paid"}
+      </h3>
       {run.attempts.map((a, i) => (
         <AttemptView
           key={a.offerId ?? a.txHash ?? i}

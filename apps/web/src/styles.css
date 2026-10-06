@@ -526,3 +526,35 @@ button.link {
   margin: 0 auto;
   padding: 8px 16px 24px;
 }
+
+/* escrow card (PR-08m) */
+.escrow {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 6px;
+}
+.escrow-label {
+  color: var(--amber);
+  font-size: 0.85rem;
+}
+.escrow dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 0.85rem;
+}
+.escrow dt {
+  color: var(--muted);
+}
+.escrow dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.escrow .deadline {
+  display: contents;
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}

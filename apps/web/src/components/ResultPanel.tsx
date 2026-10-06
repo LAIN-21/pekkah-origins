@@ -1,6 +1,7 @@
 import { ASSET_SYMBOL, explorerAddressUrl, MASUMI_LOCK_LABEL } from "@pekkah/protocol";
 import { formatAsset, formatClockSeconds, formatLovelace, formatMs, short } from "../format";
 import { type Attempt, isEscrow, type RunView } from "../run";
+import { EscrowCard } from "./EscrowCard";
 
 /** The attempt that delivered and has a receipt (the last one in a failover). */
 function paidAttempt(run: RunView): Attempt | undefined {
@@ -85,7 +86,7 @@ export function ReceiptPanel({ run, name }: { run: RunView; name: (workerId: str
             <dd>{formatLovelace(r.feeLovelace)}</dd>
           </>
         ) : null}
-        {r.lovelaceInPaymentOutput ? (
+        {r.lovelaceInPaymentOutput && !escrow ? (
           <>
             <dt>Minimum ADA</dt>
             <dd>
@@ -97,7 +98,11 @@ export function ReceiptPanel({ run, name }: { run: RunView; name: (workerId: str
         <dt>{escrow ? "Locked at" : "Settled at"}</dt>
         <dd>{formatClockSeconds(r.settledAt)}</dd>
       </dl>
-      {escrow ? <p className="small">{MASUMI_LOCK_LABEL}</p> : null}
+      {a.escrow ? (
+        <EscrowCard lock={a.escrow} seller={worker} />
+      ) : escrow ? (
+        <p className="small">{MASUMI_LOCK_LABEL}</p>
+      ) : null}
     </div>
   );
 }
