@@ -68,8 +68,9 @@ const EXPECT: Partial<Record<ScenarioName, Expect>> = {
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** ISO date and time in Singapore, e.g. 2026-10-06 16:12:11: no day/month ambiguity. */
 const sgt = (iso: string) =>
-  new Intl.DateTimeFormat("en-GB", {
+  new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Singapore",
     dateStyle: "short",
     timeStyle: "medium",
@@ -347,28 +348,43 @@ if (values.escrow) {
   if (escrow.block) console.log(`\n${escrow.block}`);
 }
 
-console.log("\ncancelled payments on chain:");
+// A cancelled payment passes only once the chain is past its TTL slot and it is still absent
+// (found:false, final:true): from then on it can never land. Absence alone could change.
+console.log("\ncancelled payments on chain (waiting until each one is past its TTL):");
 let chainOk = true;
+const refuse = (c: (typeof canceled)[number], why: string) => {
+  chainOk = false;
+  c.row.pass = false;
+  c.row.why.push(`cancelled tx ${c.txHash} ${why}`);
+  console.log(`  ${c.txHash} ${why}`);
+};
 for (const c of canceled) {
-  const q = c.ttlSlot ? `?ttlSlot=${c.ttlSlot}` : "";
-  const res = await fetch(`${base}/api/tx/${c.txHash}${q}`).catch(() => null);
-  const status = (await res?.json().catch(() => null)) as { found?: unknown; final?: unknown };
-  // Fail closed: only a definite found:false clears a cancelled payment.
-  if (!res?.ok || typeof status?.found !== "boolean") {
-    chainOk = false;
-    c.row.pass = false;
-    c.row.why.push(`could not check cancelled tx ${c.txHash} (HTTP ${res?.status ?? "-"})`);
-    console.log(`  ${c.txHash} could not be checked (HTTP ${res?.status ?? "-"})`);
+  if (!c.ttlSlot) {
+    refuse(c, "has no TTL slot, so it cannot be proven final");
     continue;
   }
-  if (status.found) {
-    chainOk = false;
-    c.row.pass = false;
-    c.row.why.push(`cancelled tx ${c.txHash} is on chain`);
+  const until = Date.now() + 12 * 60_000;
+  for (;;) {
+    const res = await fetch(`${base}/api/tx/${c.txHash}?ttlSlot=${c.ttlSlot}`).catch(() => null);
+    const status = (await res?.json().catch(() => null)) as { found?: unknown; final?: unknown };
+    if (!res?.ok || typeof status?.found !== "boolean") {
+      refuse(c, `could not be checked (HTTP ${res?.status ?? "-"})`);
+      break;
+    }
+    if (status.found) {
+      refuse(c, "is on chain");
+      break;
+    }
+    if (status.final === true) {
+      console.log(`  ${c.txHash} found=false final=true`);
+      break;
+    }
+    if (Date.now() > until) {
+      refuse(c, "is still not past its TTL after 12 minutes");
+      break;
+    }
+    await sleep(15_000);
   }
-  console.log(
-    `  ${c.txHash} found=${status.found}${typeof status.final === "boolean" ? ` final=${status.final}` : ""}`,
-  );
 }
 
 console.log("");
@@ -396,7 +412,7 @@ if (!values["no-runs-md"]) {
       existsSync(file) ? readFileSync(file, "utf8") : null,
       added.map(
         (r) =>
-          `| ${sgt(r.at)} | ${r.scenario} | ${r.workerId} | ${formatUsdAtomic(r.amountAtomic ?? "0")} | [${r.txHash?.slice(0, 10)}…](${explorerTxUrl(r.txHash ?? "")}) | ${((r.durationMs ?? 0) / 1000).toFixed(1)} s | \`${r.sha256?.slice(0, 16)}\` |`,
+          `| ${sgt(r.at)} | ${r.scenario} | ${r.workerId} | ${formatUsdAtomic(r.amountAtomic ?? "0")} | [${r.txHash?.slice(0, 10)}…](${explorerTxUrl(r.txHash ?? "")}) | ${((r.durationMs ?? 0) / 1000).toFixed(1)} s | \`${r.sha256}\` |`,
       ),
       block,
     ),

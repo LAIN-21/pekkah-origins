@@ -1,6 +1,6 @@
 # Pekkah
 
-Pekkah is a market where idle machines sell compute per job to AI agents. My agent asks for a job with a deadline and a budget, the market matches it to a worker it has measured, and the agent pays per job with x402 on Cardano preprod, in test tUSDM, with no account. The payment settles only after the job delivers, so a failed job costs nothing.
+Pekkah is a market where idle machines sell compute per job to AI agents. My agent asks for a job with a deadline and a budget, the market matches it to a worker it has measured, and the agent pays per job with x402 on Cardano preprod, in test tUSDM, with no account. The payment settles only after the job delivers: when a job fails, the market never broadcasts the payment, so it costs nothing. (That relies on an honest market; see the honest limits.)
 
 **Live:** https://146-190-188-100.sslip.io (Cardano preprod, test tokens only)
 
@@ -71,7 +71,7 @@ Workers need no inbound port: they dial out to the market. Each CPU job runs in 
 3. **402.** The agent asks for the job. The market answers `402 Payment Required`: pay this worker's address this price, in tUSDM.
 4. **Sign.** The agent checks that the 402 asks for exactly the offer it accepted and that its spend caps allow it. It then signs a Cardano transaction and sends it with the request.
 5. **Run.** The facilitator verifies the signed transaction. The market dispatches the job to that worker and waits for the result.
-6. **Settle.** Only after the result arrives does the facilitator broadcast the transaction and wait for it on chain. The agent gets the result and a receipt with a Cardanoscan link. If the job fails, the transaction is never broadcast and nothing is charged.
+6. **Settle.** Only after the result arrives does the facilitator broadcast the transaction and wait for it on chain. The agent gets the result and a receipt with a Cardanoscan link. If the job fails, the market's settlement never broadcasts the transaction, so nothing is charged. The market does hold the signed transaction until its TTL, so this relies on an honest market (see the honest limits); escrow removes that trust.
 
 With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Nothing is released to the worker: I built the lock, and release, refund and dispute are my next step.
 
@@ -83,29 +83,29 @@ Every run is a real transaction on Cardano preprod. `scripts/demo-check.sh` appe
 
 | Time (SGT) | Scenario | Worker | Price | Tx | Duration | sha256 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 06/10/2026, 16:28:01 | gpu-image | A | $0.05 | [fc9d142c9d…](https://preprod.cardanoscan.io/transaction/fc9d142c9d9e90e84110cac006bf63d1fe5896ebc40fca433c5051372aaa6a5f) | 6.9 s | `454524db2dee1298` |
-| 06/10/2026, 16:28:52 | cpu-counter | C | $0.02 | [78aea2f607…](https://preprod.cardanoscan.io/transaction/78aea2f607277092254bff50ff26b26678afa1418d27b804934cf874ebacd347) | 13.2 s | `ae78f05dee7b858b` |
-| 06/10/2026, 16:29:29 | cpu-tight | B | $0.03 | [5697bd99fb…](https://preprod.cardanoscan.io/transaction/5697bd99fb74e24a009f02cccb2f3d7da43c5627750f7f7365c10e3898cf705d) | 6.3 s | `b1b128e34e96600f` |
-| 06/10/2026, 16:30:10 | failover | B | $0.03 | [be12c2efd5…](https://preprod.cardanoscan.io/transaction/be12c2efd57677d5045c2d604359e6acca6a4b574f1f12afb4e02e1c6c2cf77e) | 6.6 s | `c1a15015c207fab7` |
+| 2026-10-06 16:28:01 | gpu-image | A | $0.05 | [fc9d142c9d…](https://preprod.cardanoscan.io/transaction/fc9d142c9d9e90e84110cac006bf63d1fe5896ebc40fca433c5051372aaa6a5f) | 6.9 s | `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| 2026-10-06 16:28:52 | cpu-counter | C | $0.02 | [78aea2f607…](https://preprod.cardanoscan.io/transaction/78aea2f607277092254bff50ff26b26678afa1418d27b804934cf874ebacd347) | 13.2 s | `ae78f05dee7b858b6323d525e35a61ab238a1c867c26e207df14e3ae9a24fb48` |
+| 2026-10-06 16:29:29 | cpu-tight | B | $0.03 | [5697bd99fb…](https://preprod.cardanoscan.io/transaction/5697bd99fb74e24a009f02cccb2f3d7da43c5627750f7f7365c10e3898cf705d) | 6.3 s | `b1b128e34e96600f3cb054237abc6a2805e5648817f326d77146b0ae3d0ee942` |
+| 2026-10-06 16:30:10 | failover | B | $0.03 | [be12c2efd5…](https://preprod.cardanoscan.io/transaction/be12c2efd57677d5045c2d604359e6acca6a4b574f1f12afb4e02e1c6c2cf77e) | 6.6 s | `c1a15015c207fab78a7c2c9b6502680ef3aae7e672d0e368f0ea391048d735e7` |
 
-In each failover round, C's job was killed mid-run. Its payment was cancelled before settlement, and the chain confirms the signed transaction never landed (`final: true` once past its TTL). My agent re-quoted without C and paid B.
+In each failover round, C's job was killed mid-run. Its payment was cancelled before settlement. Each of the five signed transactions stayed off chain until the chain was past its TTL (`found: false, final: true`, checked at 16:40 SGT), so none can ever land. My agent re-quoted without C and paid B.
 
 ## Masumi escrow evidence
 
 Written by `scripts/demo-check.sh --escrow` from a real run's events. The funds are locked in escrow: nothing was released to the worker.
 
-#### gpu-image-escrow, 06/10/2026, 16:34:39 SGT
+#### gpu-image-escrow, 2026-10-06 16:34:39 SGT
 
 | Field | Value |
 | --- | --- |
-| Run | `gpu-image-escrow`, run `01M485KG1XAB9W93HGFDNAPK77`, 06/10/2026, 16:34:39 SGT |
+| Run | `gpu-image-escrow`, run `01M485KG1XAB9W93HGFDNAPK77`, 2026-10-06 16:34:39 SGT |
 | Compute | worker A (NVIDIA RTX 4000 Ada Generation 20 GB, 8 vCPU INTEL(R) XEON(R) GOLD 6548Y+, 31.3 GB RAM), image, 6.9 s, sha256 `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
 | Lock tx | [`9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de`](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de) |
 | Escrow address | `addr_test1wzs4e6wc95hkwezlccjw9mdvq0r0rsgx6zk34avptga3ftgn37w4g` (Masumi `vested_pay` V2, preprod) |
 | Seller | worker A, `addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga` (`terms.sellerAddress`) |
 | Request hash | `3632e82ae498d157e871540f424e8aa11803d41e0d59067fe6621e64b5c2811f` (`terms.inputHash`; recomputed from the quoted request: match) |
 | Amount and asset | 0.05 tUSDM (`e675b46e4d2242c991a8932a99db3044e80515ae14b4c4ccf6b3f4c9.0014df10745553444d`) plus 4.00399 tADA collateral |
-| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de)); pay by 06/10/2026, 16:44:43, submit result 06/10/2026, 16:59:43, unlock 06/10/2026, 17:19:43, dispute 06/10/2026, 17:39:43 (SGT) |
+| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de)); pay by 2026-10-06 16:44:43, submit result 2026-10-06 16:59:43, unlock 2026-10-06 17:19:43, dispute 2026-10-06 17:39:43 (SGT) |
 | Status | Locked in Masumi escrow. Release, refund and dispute tooling is my next step. |
 
 ## Run it locally

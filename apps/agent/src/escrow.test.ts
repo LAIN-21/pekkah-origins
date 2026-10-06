@@ -65,7 +65,7 @@ describe("escrow receipt", () => {
     expect(text).toContain("in Masumi escrow");
     expect(text).toContain(MASUMI_LOCK_LABEL);
     expect(text).toContain(`seller     worker A (${SELLER})`);
-    expect(text).toMatch(/payBy {6}\d\d\/\d\d\/\d{4}, \d\d:\d\d:\d\d SGT/);
+    expect(text).toMatch(/payBy {6}\d{4}-\d\d-\d\d \d\d:\d\d:\d\d SGT/);
     expect(text).not.toMatch(/\bpaid\b|released/i);
   });
 });

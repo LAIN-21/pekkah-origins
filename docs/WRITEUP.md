@@ -14,7 +14,7 @@ Pekkah is a market for that. Machines sell compute per job. Agents buy per job w
 
 **`@x402/cardano` on every side.** The agent uses its client signer. The market uses its `exact` scheme through the x402 Express middleware. My facilitator, built on its facilitator signer and adapted from the Cardano Foundation's x402-express starter, verifies each signed payment and broadcasts it. Blockfrost is the chain backend for the facilitator and the agent.
 
-**Settle after delivery.** The x402 middleware runs my handler between verification and settlement. The handler dispatches the job to the worker and waits for the result. Any failure answers 502, so x402 never settles and the signed transaction is never broadcast. I prove a cancelled payment never landed with the transaction's own TTL: once the chain is past that slot, the transaction can never be included.
+**Settle after delivery.** The x402 middleware runs my handler between verification and settlement. The handler dispatches the job to the worker and waits for the result. Any failure answers 502, so the market's x402 flow never settles and never broadcasts the signed transaction. I prove a cancelled payment never landed with the transaction's own TTL: once the chain is past that slot, the transaction can never be included. The market does hold the signed transaction until then, so a dishonest market could still broadcast it before the TTL. That is the trust Masumi's escrow removes (below).
 
 **tUSDM, a dollar stablecoin on preprod.** Prices are in dollars. Inside the code, money is always integer atomic units. Dollars are for display only.
 
