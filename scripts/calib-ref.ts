@@ -76,6 +76,9 @@ for (const preset of ["tiny", "hd-fast", "hd-heavy"]) {
   presets[preset] = run({ preset, format: "raw" }).iterations;
   console.log(`${preset}: ${presets[preset]} iterations`);
 }
+// The timed calibration job (CALIBRATION.fractal's `rate` step): a real hd-fast render.
+const rate = run({ preset: "hd-fast", palette: "ocean", format: "png" });
+console.log(`rate (hd-fast, ocean, png): sha256 ${rate.sha256}`);
 
 const sourceHash = createHash("sha256")
   .update(readFileSync(join(root, "workloads/fractal/fractal/core.py")))
@@ -92,6 +95,9 @@ export const CALIB_ITERS: readonly number[] = ${JSON.stringify(iters)};
 
 /** Exact total iterations of each preset (the calib preset depends on its challenge). */
 export const PRESET_ITERS = ${JSON.stringify(presets, null, 2)} as const;
+
+/** sha256 of the timed calibration render: hd-fast, palette ocean, PNG. */
+export const CALIB_RATE_SHA256 = "${rate.sha256}";
 
 /** sha256 of workloads/fractal/fractal/core.py when these were generated. */
 export const FRACTAL_SOURCE_SHA256 = "${sourceHash}";

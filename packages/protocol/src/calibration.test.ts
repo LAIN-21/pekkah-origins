@@ -3,13 +3,15 @@ import { CALIBRATION, IMAGE_CALIBRATION_PARAMS, randomChallenge } from "./calibr
 import { ImageParams } from "./workloads.js";
 
 describe("calibration plans", () => {
-  it("measures fractal overhead, then a checked challenge view", () => {
+  it("measures fractal overhead, a checked challenge view, then a checked timed render", () => {
     const jobs = CALIBRATION.fractal.jobs(5);
     expect(CALIBRATION.fractal.verifiable).toBe(true);
     expect(jobs.map((j) => [j.step, j.checked])).toEqual([
       ["overhead", false],
       ["challenge", true],
+      ["rate", true],
     ]);
+    expect(jobs[2]?.params).toEqual({ preset: "hd-fast", palette: "ocean", format: "png" });
     expect(jobs[1]?.params).toEqual({
       preset: "calib",
       challenge: 5,

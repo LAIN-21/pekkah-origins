@@ -1,9 +1,10 @@
 import { randomInt } from "node:crypto";
 import {
   CALIB_CHALLENGES,
-  CALIB_ITERS,
+  CALIB_RATE_SHA256,
   CALIB_SHA256,
   CALIBRATION,
+  PRESET_COST,
   type WorkloadName,
 } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
@@ -26,28 +27,39 @@ export function createCalibrator(bus: EventBus, log: Logger) {
     try {
       if (workload === "fractal") {
         const challenge = randomInt(CALIB_CHALLENGES);
-        const [overheadJob, challengeJob] = CALIBRATION.fractal.jobs(challenge);
-        if (overheadJob?.workload !== "fractal" || challengeJob?.workload !== "fractal") return;
-        const overhead = await registry.dispatch(workerId, {
-          ...overheadJob,
-          kind: "calibration",
-          quiet: true,
-        });
-        if (!overhead.ok) throw new Error(`overhead job failed: ${overhead.error}`);
-        const timed = await registry.dispatch(workerId, {
-          ...challengeJob,
-          kind: "calibration",
-          quiet: true,
-        });
-        if (!timed.ok) throw new Error(`challenge job failed: ${timed.error}`);
-        const overheadSec = round3(overhead.durationMs / 1000);
-        const calibSec = round3(timed.durationMs / 1000);
-        // Catches a faulty worker, not a cheating one: the 8 challenges are public, so a
-        // worker could replay stored answers (PLAN 6.5). Only allowlisted tokens join.
-        const expected = CALIB_SHA256[challenge];
-        const iterations = CALIB_ITERS[challenge] ?? 0;
-        const verified = expected !== undefined && timed.sha256 === expected && iterations > 0;
-        const secPerIter = Math.max(calibSec - overheadSec, 0.05) / Math.max(iterations, 1);
+        const [overheadJob, challengeJob, rateJob] = CALIBRATION.fractal.jobs(challenge);
+        if (
+          overheadJob?.workload !== "fractal" ||
+          challengeJob?.workload !== "fractal" ||
+          rateJob?.workload !== "fractal"
+        ) {
+          return;
+        }
+        const run = async (job: typeof overheadJob) => {
+          const outcome = await registry.dispatch(workerId, {
+            ...job,
+            kind: "calibration",
+            quiet: true,
+          });
+          if (!outcome.ok) throw new Error(`${job.step} job failed: ${outcome.error}`);
+          return outcome;
+        };
+        // The first job after a connect can run cold (1.5x warm on C), so the overhead is the
+        // faster of two runs.
+        const overheadMs = Math.min(
+          (await run(overheadJob)).durationMs,
+          (await run(overheadJob)).durationMs,
+        );
+        const answer = await run(challengeJob);
+        const rate = await run(rateJob);
+        const overheadSec = round3(overheadMs / 1000);
+        const calibSec = round3(rate.durationMs / 1000);
+        // Catches a faulty worker, not a cheating one: the answers are public, so a worker
+        // could replay stored results (PLAN 6.5). Only allowlisted tokens join.
+        const verified =
+          answer.sha256 === CALIB_SHA256[challenge] && rate.sha256 === CALIB_RATE_SHA256;
+        // The speed, in seconds per hd-heavy-equivalent iteration (PLAN 6.2).
+        const secPerIter = Math.max(calibSec - overheadSec, 0.05) / PRESET_COST["hd-fast"];
         registry.setCalibration(
           workerId,
           { fractal: { overheadSec, calibSec, secPerIter, verified, challenge, at: at() } },

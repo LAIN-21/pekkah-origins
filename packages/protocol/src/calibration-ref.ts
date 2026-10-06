@@ -25,6 +25,9 @@ export const PRESET_ITERS = {
   "hd-heavy": 3158889707,
 } as const;
 
+/** sha256 of the timed calibration render: hd-fast, palette ocean, PNG. */
+export const CALIB_RATE_SHA256 = "ae78f05dee7b858b6323d525e35a61ab238a1c867c26e207df14e3ae9a24fb48";
+
 /** sha256 of workloads/fractal/fractal/core.py when these were generated. */
 export const FRACTAL_SOURCE_SHA256 =
   "2f7a1b6a5b4a5263c5652c0f2b3971188c6aaef914efb795d5d8cf3f742538ff";
