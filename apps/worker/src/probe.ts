@@ -62,7 +62,6 @@ export async function probe(o: ProbeOptions, d: ProbeDeps): Promise<ProbeCheck[]
     `  GPU      ${hw.gpu ? `${hw.gpu.name}, ${hw.gpu.vramGb} GB, driver ${hw.gpu.driver}` : "none seen by nvidia-smi here"}`,
   );
   d.print(`  Docker   ${dockerOk ? version.stdout.trim() : "unreachable"}`);
-  d.print(`  NVIDIA   container runtime ${nvidiaRuntime ? "present" : "not found"}`);
   d.print(`  Jobs     ${o.cpus} CPUs, ${o.memory} memory, ${o.fractalImage}`);
   d.print("");
   d.print("Checks");
@@ -150,7 +149,7 @@ export async function probe(o: ProbeOptions, d: ProbeDeps): Promise<ProbeCheck[]
       check("gpu", false, `a --gpus all container failed: ${lastLine(gpu)}${hint}`);
     }
   } else {
-    d.print("  - gpu       no GPU found: this machine sells CPU jobs only");
+    d.print("  - gpu       no GPU visible here: CPU jobs only (on a GPU machine, add --gpus all)");
   }
   return checks;
 }
