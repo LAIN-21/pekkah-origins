@@ -207,26 +207,48 @@ export type EscrowLocation =
   | { kind: "unknown"; reason: string };
 
 /**
- * Where a lock's escrow sits now. It follows the escrow output from the lock through every
+ * Where a lock's escrow sits now. It starts from the lock's escrow output, named by its index
+ * (without one, the lock transaction must hold exactly one escrow output), then follows every
  * spend that keeps it at the escrow address (SubmitResult does), matching the datum's
  * reference signature, which each continuation keeps.
  */
 export async function locateEscrow(
   txUtxos: (txHash: string) => Promise<ChainTxUtxos | null>,
   lockTxHash: string,
+  outputIndex?: number,
 ): Promise<EscrowLocation> {
   const escrow = masumiEscrowAddress(NETWORK);
+  const isEscrow = (out: ChainTxUtxos["outputs"][number]) =>
+    out.address === escrow &&
+    out.inline_datum !== null &&
+    parseMasumiLockDatum(out.inline_datum) !== null;
   let txHash = lockTxHash;
   let signature: string | undefined;
   let previous: ChainTxUtxos["outputs"][number] | undefined;
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     const utxos = await txUtxos(txHash);
     if (!utxos) return { kind: "unknown", reason: `transaction ${txHash} is not on chain yet` };
-    const output = utxos.outputs.find((out) => {
-      if (out.address !== escrow || !out.inline_datum) return false;
-      const view = parseMasumiLockDatum(out.inline_datum);
-      return view !== null && (signature === undefined || view.referenceSignature === signature);
-    });
+    let output: ChainTxUtxos["outputs"][number] | undefined;
+    if (hop === 0) {
+      const escrows = utxos.outputs.filter(isEscrow);
+      if (outputIndex !== undefined) {
+        output = escrows.find((out) => out.output_index === outputIndex);
+        if (!output) {
+          return { kind: "unknown", reason: `output ${outputIndex} of the lock is not an escrow` };
+        }
+      } else if (escrows.length !== 1) {
+        return {
+          kind: "unknown",
+          reason: `the lock transaction has ${escrows.length} escrow outputs; name the output index`,
+        };
+      } else output = escrows[0];
+    } else {
+      output = utxos.outputs.find(
+        (out) =>
+          isEscrow(out) &&
+          parseMasumiLockDatum(out.inline_datum as string)?.referenceSignature === signature,
+      );
+    }
     if (!output) {
       if (!previous) return { kind: "unknown", reason: "the transaction has no escrow output" };
       return { kind: "closed", spentBy: txHash, last: previous };
@@ -242,9 +264,10 @@ export async function locateEscrow(
 }
 
 /**
- * Whether the transaction that closed an escrow was its release: Seller A received the escrow's
- * token and the buyer at least the collateral. Read from the chain, so a release that landed
- * while the market was down still counts, and a refund never does.
+ * Whether the transaction that closed an escrow was its release, as this market builds one:
+ * Seller A received the escrow's token, and the buyer all of the escrow's lovelace (at least
+ * the collateral). Read from the chain, so a release that landed while the market was down
+ * still counts, and a refund never does.
  */
 export async function releaseOf(
   txUtxos: (txHash: string) => Promise<ChainTxUtxos | null>,
@@ -263,12 +286,15 @@ export async function releaseOf(
       out.address === sellerAddress &&
       out.amount.some((a) => a.unit === token.unit && BigInt(a.quantity) >= BigInt(token.quantity)),
   );
+  const escrowLovelace = BigInt(
+    closed.last.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0",
+  );
+  const owed =
+    escrowLovelace > view.collateralReturnLovelace ? escrowLovelace : view.collateralReturnLovelace;
   const toBuyer = tx.outputs.find(
     (out) =>
       out.address === buyerAddress &&
-      out.amount.some(
-        (a) => a.unit === "lovelace" && BigInt(a.quantity) >= view.collateralReturnLovelace,
-      ),
+      out.amount.some((a) => a.unit === "lovelace" && BigInt(a.quantity) >= owed),
   );
   if (!toSeller || !toBuyer) return null;
   return {
@@ -317,8 +343,12 @@ export function createEscrowReleaser(o: { chain: SellerChain; now?: () => number
     return (await res.json()) as ChainTxUtxos;
   }
 
-  async function run(lockTxHash: string, dryRun: boolean): Promise<ReleaseOutcome> {
-    const where = await locateEscrow(txUtxos, lockTxHash);
+  async function run(
+    lockTxHash: string,
+    outputIndex: number | undefined,
+    dryRun: boolean,
+  ): Promise<ReleaseOutcome> {
+    const where = await locateEscrow(txUtxos, lockTxHash, outputIndex);
     if (where.kind === "unknown") return { ok: false, reason: where.reason, retry: true };
     if (where.kind === "closed") {
       const plan = await releaseOf(txUtxos, where, chain.sellerAddress);
@@ -346,13 +376,16 @@ export function createEscrowReleaser(o: { chain: SellerChain; now?: () => number
     return { ok: true, dryRun: false, txHash, plan, feeLovelace, exUnits };
   }
 
-  /** Never throws: a failure is an outcome. A build or evaluation error submits nothing. */
+  /**
+   * Never throws: a failure is an outcome. A build or evaluation error submits nothing.
+   * `outputIndex` names the lock's escrow output (from escrow.locked).
+   */
   return function release(
     lockTxHash: string,
-    options: { dryRun?: boolean } = {},
+    options: { dryRun?: boolean; outputIndex?: number } = {},
   ): Promise<ReleaseOutcome> {
     return chain.enqueue(() =>
-      run(lockTxHash, options.dryRun === true).catch((err: unknown) => ({
+      run(lockTxHash, options.outputIndex, options.dryRun === true).catch((err: unknown) => ({
         ok: false as const,
         reason: err instanceof Error ? err.message : String(err),
         retry: true,

@@ -60,6 +60,7 @@ export function escrowLock(input: {
   if (!output.datum) return { error: "the escrow output has no inline datum" };
   const parsed = EscrowLockSchema.safeParse({
     txHash: input.txHash,
+    outputIndex,
     escrowAddress: requirements.payTo,
     sellerAddress: terms.sellerAddress,
     amountAtomic: requirements.amount,

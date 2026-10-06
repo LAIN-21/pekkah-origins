@@ -8,6 +8,8 @@ import { waitForTx } from "./result-publish.js";
 
 export interface PendingRelease {
   lockTxHash: string;
+  /** The escrow output's index in the lock transaction, from escrow.locked. */
+  outputIndex?: number;
   /** POSIX ms, from the lock's escrow.locked event. */
   unlockTime: number;
   runId?: string;
@@ -21,13 +23,14 @@ export interface PendingRelease {
 export function pendingReleases(runs: RunLog[]): PendingRelease[] {
   const pending: PendingRelease[] = [];
   for (const run of runs) {
-    const locks = new Map<string, { unlockTime: number; jobId?: string }>();
+    const locks = new Map<string, { unlockTime: number; outputIndex?: number; jobId?: string }>();
     const closed = new Set<string>();
     for (const e of run.events) {
       if (e.dev) continue;
       if (e.type === "escrow.locked") {
         locks.set(e.data.txHash, {
           unlockTime: Number(e.data.unlockTime),
+          ...(e.data.outputIndex !== undefined ? { outputIndex: e.data.outputIndex } : {}),
           ...(e.jobId ? { jobId: e.jobId } : {}),
         });
       }
@@ -42,6 +45,7 @@ export function pendingReleases(runs: RunLog[]): PendingRelease[] {
       const jobId = e.jobId ?? lock.jobId;
       pending.push({
         lockTxHash: e.data.lockTxHash,
+        ...(lock.outputIndex !== undefined ? { outputIndex: lock.outputIndex } : {}),
         unlockTime: lock.unlockTime,
         runId: run.runId,
         ...(jobId ? { jobId } : {}),
@@ -52,7 +56,7 @@ export function pendingReleases(runs: RunLog[]): PendingRelease[] {
 }
 
 export interface ReleaseSchedulerOptions {
-  release: (lockTxHash: string) => Promise<ReleaseOutcome>;
+  release: (lock: { lockTxHash: string; outputIndex?: number }) => Promise<ReleaseOutcome>;
   /** Whether the facilitator sees the transaction on chain. */
   txFound: (txHash: string) => Promise<boolean>;
   emit: (event: JobEventInput) => void;
@@ -101,6 +105,7 @@ export class ReleaseScheduler {
     if (event.type === "escrow.locked") {
       this.locks.set(event.data.txHash, {
         lockTxHash: event.data.txHash,
+        ...(event.data.outputIndex !== undefined ? { outputIndex: event.data.outputIndex } : {}),
         unlockTime: Number(event.data.unlockTime),
         ...(event.runId ? { runId: event.runId } : {}),
         ...(event.jobId ? { jobId: event.jobId } : {}),
@@ -184,7 +189,7 @@ export class ReleaseScheduler {
     const { lockTxHash } = entry.p;
     let outcome: ReleaseOutcome;
     try {
-      outcome = await this.o.release(lockTxHash);
+      outcome = await this.o.release(entry.p);
     } catch (err) {
       outcome = {
         ok: false,

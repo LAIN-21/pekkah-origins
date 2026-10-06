@@ -74,6 +74,27 @@ describe("finding where a lock's escrow sits now", () => {
     });
   });
 
+  it("starts from the lock's own escrow output when it is named, and fails closed when not", async () => {
+    // Two escrow outputs in one lock transaction: only the index says which is this lock.
+    const other = { ...submitOutput(null), output_index: 0 };
+    const mine = { ...lockOutput(null), output_index: 1 };
+    const txs = chain({ [LOCK_TX]: [other, mine] });
+    expect(await locateEscrow(txs, LOCK_TX, 1)).toEqual({
+      kind: "open",
+      txHash: LOCK_TX,
+      outputIndex: 1,
+    });
+    expect(await locateEscrow(txs, LOCK_TX)).toEqual({
+      kind: "unknown",
+      reason: "the lock transaction has 2 escrow outputs; name the output index",
+    });
+    const plain = chain({ [LOCK_TX]: [output({ address: SELLER_A }), mine] });
+    expect(await locateEscrow(plain, LOCK_TX, 0)).toEqual({
+      kind: "unknown",
+      reason: "output 0 of the lock is not an escrow",
+    });
+  });
+
   it("follows SubmitResult's continuing output, matching the reference signature", async () => {
     const other = output({ output_index: 0, inline_datum: null });
     const txs = chain({
@@ -133,6 +154,31 @@ describe("telling a release from a refund, on chain", () => {
       collateralReturnLovelace: view.collateralReturnLovelace.toString(),
       unlockTime: Number(view.unlockTime),
     });
+  });
+
+  it("is not a release when the buyer got less than all of the escrow's lovelace", async () => {
+    const richer = {
+      ...closed,
+      last: submitOutput(RELEASE_TX),
+    };
+    richer.last.amount = [
+      { unit: "lovelace", quantity: "9000000" },
+      { unit: TUSDM_UNIT, quantity: "50000" },
+    ];
+    const txs = chain({
+      [RELEASE_TX]: [
+        output({ address: BUYER, amount: [{ unit: "lovelace", quantity: "4003990" }] }),
+        output({
+          address: SELLER_A,
+          output_index: 1,
+          amount: [
+            { unit: "lovelace", quantity: "6189560" },
+            { unit: TUSDM_UNIT, quantity: "50000" },
+          ],
+        }),
+      ],
+    });
+    expect(await releaseOf(txs, richer, SELLER_A)).toBeNull();
   });
 
   it("is not a release when everything went back to the buyer", async () => {

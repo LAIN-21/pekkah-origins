@@ -48,10 +48,12 @@ const releasedEvent = {
 
 function scheduler(outcomes: (ReleaseOutcome | Error)[], found = () => true) {
   const calls: string[] = [];
+  const indexes: (number | undefined)[] = [];
   const emitted: JobEventInput[] = [];
   const s = new ReleaseScheduler({
-    release: async (lockTxHash) => {
+    release: async ({ lockTxHash, outputIndex }) => {
       calls.push(lockTxHash);
+      indexes.push(outputIndex);
       const next = outcomes.shift() ?? { ok: false, reason: "no outcome left", retry: false };
       if (next instanceof Error) throw next;
       return next;
@@ -65,7 +67,7 @@ function scheduler(outcomes: (ReleaseOutcome | Error)[], found = () => true) {
     backoffMs: () => 30_000,
     maxAttempts: 3,
   });
-  return { s, calls, emitted };
+  return { s, calls, indexes, emitted };
 }
 
 beforeEach(() => {
@@ -83,6 +85,7 @@ describe("pending releases in saved runs", () => {
     jobId: "01JOB",
     data: {
       txHash: LOCK,
+      outputIndex: 1,
       escrowAddress: `addr_test1w${"z".repeat(52)}`,
       sellerAddress: SELLER_A,
       amountAtomic: "50000",
@@ -110,7 +113,13 @@ describe("pending releases in saved runs", () => {
 
   it("are the locks with a submitted result and no release or refund", () => {
     expect(pendingReleases([run([locked, result])])).toEqual([
-      { lockTxHash: LOCK, unlockTime: T0 + 10 * 60_000, runId: "01RUN", jobId: "01JOB" },
+      {
+        lockTxHash: LOCK,
+        outputIndex: 1,
+        unlockTime: T0 + 10 * 60_000,
+        runId: "01RUN",
+        jobId: "01JOB",
+      },
     ]);
     expect(pendingReleases([run([locked])])).toEqual([]);
     const released = ev({ ...releasedEvent, data: releasedEvent.data } as never);
@@ -193,6 +202,32 @@ describe("the release scheduler", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(calls).toHaveLength(2);
     expect(emitted).toEqual([releasedEvent]);
+  });
+
+  it("passes the lock's escrow output from escrow.locked to the release", async () => {
+    const { s, calls, indexes } = scheduler([submittedOk]);
+    const at = new Date(T0).toISOString();
+    s.observe({
+      id: "1",
+      ts: at,
+      source: "chain",
+      type: "escrow.locked",
+      runId: "01RUN",
+      jobId: "01JOB",
+      data: { txHash: LOCK, outputIndex: 2, unlockTime: String(T0 - 120_000) },
+    } as unknown as JobEvent);
+    s.observe({
+      id: "2",
+      ts: at,
+      source: "chain",
+      type: "escrow.result_submitted",
+      runId: "01RUN",
+      jobId: "01JOB",
+      data: { lockTxHash: LOCK, txHash: SUBMIT },
+    } as unknown as JobEvent);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual([LOCK]);
+    expect(indexes).toEqual([2]);
   });
 
   it("schedules from live events and forgets a lock once it is released", async () => {

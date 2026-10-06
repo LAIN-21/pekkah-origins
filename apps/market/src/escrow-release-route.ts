@@ -7,7 +7,12 @@ import { rateLimit } from "./limits.js";
 import type { ReleaseScheduler } from "./release-scheduler.js";
 import type { RunStore } from "./runs.js";
 
-const ReleaseRequest = z.object({ lockTxHash: TxHash, dryRun: z.boolean().optional() });
+const ReleaseRequest = z.object({
+  lockTxHash: TxHash,
+  /** The lock's escrow output; the run log knows it for the market's own locks. */
+  outputIndex: z.number().int().nonnegative().optional(),
+  dryRun: z.boolean().optional(),
+});
 
 /**
  * POST /api/escrow/release {lockTxHash, dryRun?}, Bearer DEMO_TOKEN only: releases a lock the
@@ -33,18 +38,21 @@ export function registerEscrowReleaseRoute(
           return;
         }
         const { lockTxHash, dryRun } = parsed.data;
+        const lock = o.runs.findLock(lockTxHash);
+        const outputIndex = parsed.data.outputIndex ?? lock?.outputIndex;
+        const index = outputIndex !== undefined ? { outputIndex } : {};
         if (dryRun) {
-          const outcome = await o.release(lockTxHash, { dryRun: true });
+          const outcome = await o.release(lockTxHash, { dryRun: true, ...index });
           res.status(outcome.ok ? 200 : 409).json(outcome);
           return;
         }
-        const lock = o.runs.findLock(lockTxHash);
         if (lock?.releasedTxHash) {
           res.json({ released: true, txHash: lock.releasedTxHash, runId: lock.runId });
           return;
         }
         const outcome = await o.releases.releaseNow({
           lockTxHash,
+          ...index,
           unlockTime: lock?.unlockTime ?? 0,
           ...(lock ? { runId: lock.runId } : {}),
           ...(lock?.jobId ? { jobId: lock.jobId } : {}),

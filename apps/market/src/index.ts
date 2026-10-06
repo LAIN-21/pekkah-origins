@@ -110,7 +110,8 @@ const escrowResults = sellerChain
 const release = sellerChain ? createEscrowReleaser({ chain: sellerChain }) : null;
 const releases = release
   ? new ReleaseScheduler({
-      release: (lockTxHash) => release(lockTxHash),
+      release: ({ lockTxHash, outputIndex }) =>
+        release(lockTxHash, outputIndex !== undefined ? { outputIndex } : {}),
       txFound,
       emit: (event) => void bus.emit(event),
       log,

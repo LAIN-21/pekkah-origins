@@ -25,7 +25,7 @@ const plan = {
   collateralReturnLovelace: "4003990",
   unlockTime: 1,
 };
-const calls: { lockTxHash: string; dryRun: boolean }[] = [];
+const calls: { lockTxHash: string; dryRun: boolean; outputIndex?: number }[] = [];
 let next: ReleaseOutcome = {
   ok: true,
   dryRun: false,
@@ -76,11 +76,16 @@ beforeAll(async () => {
     },
   });
   const release: EscrowReleaser = async (lockTxHash, options = {}) => {
-    calls.push({ lockTxHash, dryRun: options.dryRun === true });
+    calls.push({
+      lockTxHash,
+      dryRun: options.dryRun === true,
+      ...(options.outputIndex !== undefined ? { outputIndex: options.outputIndex } : {}),
+    });
     return options.dryRun && next.ok ? { ...next, dryRun: true, txHash: "" } : next;
   };
   const releases = new ReleaseScheduler({
-    release: (lockTxHash) => release(lockTxHash),
+    release: ({ lockTxHash, outputIndex }) =>
+      release(lockTxHash, outputIndex !== undefined ? { outputIndex } : {}),
     txFound: async () => false,
     emit: (event) => void bus.emit(event),
     log,
@@ -123,6 +128,9 @@ describe("POST /api/escrow/release", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, dryRun: true, feeLovelace: "668748" });
     expect(calls.at(-1)).toEqual({ lockTxHash: LOCK, dryRun: true });
+    await post({ lockTxHash: LOCK, outputIndex: 3, dryRun: true });
+    expect(calls.at(-1)).toEqual({ lockTxHash: LOCK, dryRun: true, outputIndex: 3 });
+    expect((await post({ lockTxHash: LOCK, outputIndex: -1 })).status).toBe(400);
   });
 
   it("answers a lock the run log already shows released, without a second release", async () => {

@@ -79,9 +79,15 @@ export class RunStore {
   }
 
   /** The run that holds an escrow lock, from its escrow.locked event, and its release if seen. */
-  findLock(
-    lockTxHash: string,
-  ): { runId: string; jobId?: string; unlockTime: number; releasedTxHash?: string } | undefined {
+  findLock(lockTxHash: string):
+    | {
+        runId: string;
+        jobId?: string;
+        outputIndex?: number;
+        unlockTime: number;
+        releasedTxHash?: string;
+      }
+    | undefined {
     for (const run of this.runs.values()) {
       const locked = run.events.find(
         (e): e is Extract<JobEvent, { type: "escrow.locked" }> =>
@@ -95,6 +101,7 @@ export class RunStore {
       return {
         runId: run.runId,
         ...(locked.jobId ? { jobId: locked.jobId } : {}),
+        ...(locked.data.outputIndex !== undefined ? { outputIndex: locked.data.outputIndex } : {}),
         unlockTime: Number(locked.data.unlockTime),
         ...(released ? { releasedTxHash: released.data.txHash } : {}),
       };

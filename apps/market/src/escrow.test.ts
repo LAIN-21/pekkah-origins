@@ -335,6 +335,7 @@ describe("POST /api/escrow-jobs/:offerId", () => {
     const locked = mine.find((e) => e.type === "escrow.locked");
     expect(locked?.data).toEqual({
       txHash: tx.txHash,
+      outputIndex: 0,
       escrowAddress: ESCROW,
       sellerAddress: seller.sellerAddress,
       amountAtomic: offer.priceAtomic,
