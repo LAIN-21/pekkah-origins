@@ -32,6 +32,10 @@ Real runs on Cardano preprod, appended by `scripts/demo-check.sh`.
 | 2026-10-06 22:46:45 | cpu-counter | C | $0.02 | [087b25bef3…](https://preprod.cardanoscan.io/transaction/087b25bef3cd818d3d3afa4210541ef73f6d336e3ed139bb23142837b4932e6c) | 13.8 s | `ae78f05dee7b858b6323d525e35a61ab238a1c867c26e207df14e3ae9a24fb48` |
 | 2026-10-06 22:47:34 | cpu-tight | B | $0.03 | [c5509305c2…](https://preprod.cardanoscan.io/transaction/c5509305c23b3457b9a65c7c132ea8c2f8792a0d8545efa5486a18aa814a5808) | 8.0 s | `b1b128e34e96600f3cb054237abc6a2805e5648817f326d77146b0ae3d0ee942` |
 | 2026-10-06 22:48:44 | failover | B | $0.03 | [c5c85fec59…](https://preprod.cardanoscan.io/transaction/c5c85fec59e1b1fb17fb1295801cabc9f800d4a147a4f2d23cdc95c68c50844a) | 8.4 s | `c1a15015c207fab78a7c2c9b6502680ef3aae7e672d0e368f0ea391048d735e7` |
+| 2026-10-06 23:29:35 | gpu-image | A | $0.05 | [1555e4c592…](https://preprod.cardanoscan.io/transaction/1555e4c5928ded7f5c520e7624479426377fcb1911a59e26ff55f58498882d6c) | 7.0 s | `454524db2dee12985a879389e61ae2ca3dc61e5b49877e0967bbc0a8b806fef9` |
+| 2026-10-06 23:29:55 | cpu-counter | C | $0.02 | [163fa1cf2d…](https://preprod.cardanoscan.io/transaction/163fa1cf2d62e56ad5eb5934f66fd6dc06bff44a60846eaf226be04809bf98dc) | 13.9 s | `ae78f05dee7b858b6323d525e35a61ab238a1c867c26e207df14e3ae9a24fb48` |
+| 2026-10-06 23:30:38 | cpu-tight | B | $0.03 | [98521810db…](https://preprod.cardanoscan.io/transaction/98521810db4766c75613f8ab9e115135bbb88b33db66c0354da9162fb8dbd24d) | 8.0 s | `b1b128e34e96600f3cb054237abc6a2805e5648817f326d77146b0ae3d0ee942` |
+| 2026-10-06 23:31:12 | failover | B | $0.03 | [098726d74f…](https://preprod.cardanoscan.io/transaction/098726d74f299d9ea64755d9e245117878cdafbb1f7ea181dd816dc96d6b8854) | 8.4 s | `c1a15015c207fab78a7c2c9b6502680ef3aae7e672d0e368f0ea391048d735e7` |
 
 <!-- masumi-evidence -->
 ## Masumi evidence
