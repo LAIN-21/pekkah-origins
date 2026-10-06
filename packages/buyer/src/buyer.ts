@@ -56,6 +56,7 @@ export interface BuyerEvent {
     amountAtomic: string;
     transferMethod: TransferMethod;
     offerId?: string;
+    ttlSlot?: string;
   };
 }
 
@@ -191,6 +192,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
           amountAtomic: paymentPayload.accepted.amount,
           transferMethod: pending.expect.transferMethod ?? "default",
           ...(pending.offerId ? { offerId: pending.offerId } : {}),
+          ...(pending.ttlSlot ? { ttlSlot: pending.ttlSlot } : {}),
         },
       });
       if (reported) {
