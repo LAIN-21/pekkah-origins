@@ -52,6 +52,20 @@ const MIN_COLLATERAL = 2_000_000n;
  * the reserve is (a funding can make it thousands of tADA).
  */
 export const MAX_COLLATERAL = 5_000_000n;
+/**
+ * The least a collateral return may hold: above a pure-ADA output's minimum (about 1 tADA).
+ * The SDK refuses to build when the return falls below that minimum.
+ */
+const MIN_RETURN = 1_500_000n;
+
+/**
+ * How much of a reserve to put up: all of it up to 5 tADA; above that, 5 tADA, unless the
+ * return would fall under its minimum, then the reserve less that minimum (still over 3.5 tADA).
+ */
+export function collateralFor(lovelace: bigint): bigint {
+  if (lovelace <= MAX_COLLATERAL) return lovelace;
+  return lovelace - MAX_COLLATERAL >= MIN_RETURN ? MAX_COLLATERAL : lovelace - MIN_RETURN;
+}
 
 /**
  * The escrow datum after SubmitResult, from the locked one: the result hash set, the state
@@ -154,7 +168,7 @@ export function collateralReserve(
   return {
     ok: true,
     utxo: reserve,
-    collateral: lovelace < MAX_COLLATERAL ? lovelace : MAX_COLLATERAL,
+    collateral: collateralFor(lovelace),
     isNot: (u) => !sameRef(u, reserve),
   };
 }

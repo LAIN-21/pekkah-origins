@@ -3,6 +3,7 @@ import type { Logger } from "@pekkah/runtime";
 import { describe, expect, it } from "vitest";
 import { throwawayMnemonic } from "../../../packages/runtime/src/test-support/mnemonic.js";
 import {
+  collateralFor,
   collateralReserve,
   createResultSubmitter,
   createSellerChain,
@@ -126,6 +127,16 @@ describe("the collateral reserve", () => {
       ok: true,
       collateral: 2_000_000n,
     });
+  });
+
+  it("leaves a collateral return above its minimum, just over 5 tADA too", () => {
+    expect(collateralFor(2_000_000n)).toBe(2_000_000n);
+    expect(collateralFor(5_000_000n)).toBe(5_000_000n);
+    // 5.1 tADA would leave a 0.1 tADA return, which the SDK refuses: put up 3.6 tADA instead.
+    expect(collateralFor(5_100_000n)).toBe(3_600_000n);
+    expect(collateralFor(6_499_999n)).toBe(4_999_999n);
+    expect(collateralFor(6_500_000n)).toBe(5_000_000n);
+    expect(collateralFor(10_000_000_000n)).toBe(5_000_000n);
   });
 
   it("needs a pure-ADA UTxO of at least 2 tADA", () => {
