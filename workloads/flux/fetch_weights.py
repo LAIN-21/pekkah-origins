@@ -15,6 +15,9 @@ MODEL = os.environ.get("FLUX_MODEL", "flux")
 # checkpoint and ae.safetensors at the repo root.
 FLUX = {
     "repo_id": "black-forest-labs/FLUX.1-schnell",
+    # The commit the weights on worker A came from: a later fetch never moves to a
+    # newer upload, so a seed keeps giving the same image.
+    "revision": "741f7c3ce8b383c54771c7003378a50191e9efe9",
     "local_dir": MODELS_DIR,
     "allow_patterns": [
         "model_index.json",
@@ -31,6 +34,7 @@ FLUX = {
 # Fallback: SDXL base 1.0, fp16 files only (about 7 GB), in its own folder.
 SDXL = {
     "repo_id": "stabilityai/stable-diffusion-xl-base-1.0",
+    "revision": "462165984030d82259a11f4367a4eed129e94a7b",
     "local_dir": os.path.join(MODELS_DIR, "sdxl"),
     "allow_patterns": [
         "model_index.json",
@@ -56,9 +60,10 @@ def main() -> int:
         print("HF_TOKEN is missing (FLUX.1-schnell is gated)", file=sys.stderr)
         return 2
     started = time.monotonic()
-    print(f"fetching {spec['repo_id']} into {spec['local_dir']}", flush=True)
+    print(f"fetching {spec['repo_id']}@{spec['revision'][:7]} into {spec['local_dir']}", flush=True)
     path = snapshot_download(
         repo_id=spec["repo_id"],
+        revision=spec["revision"],
         local_dir=spec["local_dir"],
         allow_patterns=spec["allow_patterns"],
         token=token,
