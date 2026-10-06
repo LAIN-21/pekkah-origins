@@ -23,6 +23,7 @@ import type { EventBus } from "./events.js";
 import type { JobStore } from "./jobs.js";
 import type { OfferStore } from "./offers.js";
 import { offerIdFromPath, offerKey } from "./paid.js";
+import { createResultPublisher, type EscrowResults } from "./result-publish.js";
 
 export interface MarketPayments {
   server: x402ResourceServer;
@@ -48,6 +49,7 @@ export function createMarketPayments(
   bus: EventBus,
   log: Logger,
   stores: { jobs: JobStore; offers: OfferStore },
+  escrowResults?: EscrowResults,
 ): MarketPayments {
   const facilitator =
     options.facilitator ??
@@ -74,6 +76,10 @@ export function createMarketPayments(
    * payment.settled, then escrow.locked for a Masumi lock, then receipt.issued. For an escrow
    * job, settled means the lock transaction landed: the funds are locked in escrow.
    */
+  const publishResult = escrowResults
+    ? createResultPublisher({ ...escrowResults, emit, log })
+    : undefined;
+
   const settled = (
     key: string,
     txHash: string,
@@ -99,8 +105,19 @@ export function createMarketPayments(
     if (receipt.transferMethod === "masumi") {
       try {
         const result = escrowLock({ txHash, requirements, paymentPayload });
-        if ("lock" in result) emit(key, { type: "escrow.locked", ...jobRef, data: result.lock });
-        else log.error({ txHash, key, reason: result.error }, "escrow lock not reported");
+        if ("lock" in result) {
+          emit(key, { type: "escrow.locked", ...jobRef, data: result.lock });
+          // PR-10b: record the delivered result in the escrow, as the seller.
+          if (publishResult && job?.sha256) {
+            publishResult({
+              key,
+              jobId: job.jobId,
+              lockTxHash: txHash,
+              outputIndex: result.outputIndex,
+              resultHash: job.sha256,
+            });
+          }
+        } else log.error({ txHash, key, reason: result.error }, "escrow lock not reported");
       } catch (err) {
         log.error({ txHash, key, err }, "escrow lock not reported");
       }

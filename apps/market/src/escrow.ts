@@ -45,16 +45,17 @@ export function escrowLock(input: {
   txHash: string;
   requirements: PaymentRequirements;
   paymentPayload: Pick<PaymentPayload, "payload">;
-}): { lock: EscrowLock } | { error: string } {
+}): { lock: EscrowLock; outputIndex: number } | { error: string } {
   const { requirements } = input;
   const terms = (requirements.extra as { terms?: Record<string, unknown> } | undefined)?.terms;
   if (!terms) return { error: "the requirements carry no Masumi terms" };
   const tx = decodeSignedTx(input.paymentPayload);
-  const output = tx.outputs.find(
+  const outputIndex = tx.outputs.findIndex(
     (o) =>
       o.address === requirements.payTo &&
       (o.assets[requirements.asset] ?? 0n) >= BigInt(requirements.amount),
   );
+  const output = tx.outputs[outputIndex];
   if (!output) return { error: "the transaction has no output at the escrow address" };
   if (!output.datum) return { error: "the escrow output has no inline datum" };
   const parsed = EscrowLockSchema.safeParse({
@@ -75,5 +76,5 @@ export function escrowLock(input: {
     const issue = parsed.error.issues[0];
     return { error: `unexpected terms: ${issue?.path.join(".")} ${issue?.message}` };
   }
-  return { lock: parsed.data };
+  return { lock: parsed.data, outputIndex };
 }

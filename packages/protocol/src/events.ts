@@ -188,6 +188,20 @@ export const WorkerCalibratedEvent = event(
   }),
 );
 export const EscrowLockedEvent = event("escrow.locked", EscrowLock);
+/**
+ * PR-10b: the seller recorded the delivered result's hash in the escrow datum (Masumi
+ * SubmitResult, state ResultSubmitted), seen on chain. The funds stay locked in escrow.
+ */
+export const EscrowResultSubmittedEvent = event(
+  "escrow.result_submitted",
+  z.object({
+    lockTxHash: TxHash,
+    txHash: TxHash,
+    /** sha256 of the delivered result, as in job.completed. */
+    resultHash: Sha256,
+    explorerUrl: z.string().url(),
+  }),
+);
 
 export const JobEvent = z.discriminatedUnion("type", [
   RunStartedEvent,
@@ -214,6 +228,7 @@ export const JobEvent = z.discriminatedUnion("type", [
   WorkerOfflineEvent,
   WorkerCalibratedEvent,
   EscrowLockedEvent,
+  EscrowResultSubmittedEvent,
 ]);
 export type JobEvent = z.infer<typeof JobEvent>;
 export type EventType = JobEvent["type"];

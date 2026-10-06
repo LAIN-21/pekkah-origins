@@ -37,6 +37,8 @@ const ESCROW = masumiEscrowAddress(NETWORK);
 // Worker A is the Masumi seller, as in the demo: its payout address is the seller's address.
 const seller = toMasumiSellerSigner({ mnemonic: throwawayMnemonic(), network: NETWORK });
 const calls = { settle: 0 };
+const submits: { lockTxHash: string; outputIndex: number; resultHash: string }[] = [];
+const RESULT_TX = "e".repeat(64);
 
 // Test-only stand-in for the facilitator: every payment verifies and settles.
 const facilitator: FacilitatorClient = {
@@ -126,6 +128,14 @@ beforeAll(async () => {
     bus,
     log,
     { jobs, offers },
+    {
+      submit: async (input) => {
+        submits.push(input);
+        return { ok: true, dryRun: false, txHash: RESULT_TX, feeLovelace: "695345" };
+      },
+      txFound: async () => true,
+      pollMs: 1,
+    },
   );
   const registry = new WorkerRegistry({
     tokens: parseWorkerTokens(`A:${"a".repeat(32)},B:${"b".repeat(32)}`),
@@ -305,6 +315,19 @@ describe("POST /api/escrow-jobs/:offerId", () => {
       externalDisputeUnlockTime: extra.terms.externalDisputeUnlockTime,
       explorerUrl: `https://preprod.cardanoscan.io/transaction/${tx.txHash}`,
     });
+    // PR-10b: the result hash goes into the escrow once the lock lands.
+    let submitted = events.find(
+      (e) => e.type === "escrow.result_submitted" && e.data.lockTxHash === tx.txHash,
+    );
+    for (let i = 0; i < 50 && !submitted; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      submitted = events.find(
+        (e) => e.type === "escrow.result_submitted" && e.data.lockTxHash === tx.txHash,
+      );
+    }
+    const resultHash = createHash("sha256").update(Buffer.from("png bytes from A")).digest("hex");
+    expect(submits.at(-1)).toEqual({ lockTxHash: tx.txHash, outputIndex: 0, resultHash });
+    expect(submitted?.data).toMatchObject({ txHash: RESULT_TX, resultHash });
     const receipt = mine.find((e) => e.type === "receipt.issued");
     expect(receipt?.type === "receipt.issued" && receipt.data.receipt).toMatchObject({
       transferMethod: "masumi",

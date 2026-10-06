@@ -242,6 +242,9 @@ importers:
 
   apps/market:
     dependencies:
+      '@evolution-sdk/evolution':
+        specifier: 0.5.14
+        version: 0.5.14
       '@pekkah/matcher':
         specifier: workspace:*
         version: link:../../packages/matcher

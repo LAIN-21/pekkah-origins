@@ -290,6 +290,23 @@ async function checkEscrow(
   }
   if (!locked || !started || !completed) return { pass: false, why };
 
+  // PR-10b (a bonus, so it never fails the minimum): the market submits the result hash as the
+  // seller once the lock lands. Wait for it on chain, 5 s apart, 4 minutes at most.
+  let submitted: Extract<JobEvent, { type: "escrow.result_submitted" }> | undefined;
+  for (let i = 0; i < 48 && !submitted; i++) {
+    submitted = (await events(runId)).find(
+      (e): e is Extract<JobEvent, { type: "escrow.result_submitted" }> =>
+        e.type === "escrow.result_submitted" && e.data.lockTxHash === txHash,
+    );
+    if (!submitted) await sleep(5_000);
+  }
+  const resultRow = submitted
+    ? `| Result submitted | [\`${submitted.data.txHash}\`](${submitted.data.explorerUrl}): Masumi SubmitResult as the seller. The escrow datum now holds the result hash \`${submitted.data.resultHash}\`${submitted.data.resultHash === completed.data.sha256 ? " (the delivered result's sha256)" : " (NOT the delivered result's sha256)"} and the state ResultSubmitted; the funds stay locked |`
+    : "| Result submitted | not seen within 4 minutes |";
+  console.log(
+    `  result submitted: ${submitted ? submitted.data.txHash : "not seen within 4 minutes"}`,
+  );
+
   // 6. Visible: the evidence block (12.3).
   const l: EscrowLock = locked.data;
   const block = [
@@ -305,6 +322,7 @@ async function checkEscrow(
     `| Request hash | \`${l.inputHash}\` (\`terms.inputHash\`; recomputed from the quoted request: ${requestHash === l.inputHash ? "match" : "MISMATCH"}) |`,
     `| Amount and asset | ${formatAtomic(l.amountAtomic)} tUSDM (\`${l.asset}\`) plus ${formatLovelace(l.collateralLovelace)} collateral |`,
     `| Inline datum and deadlines | inline datum on the escrow output ([check on Cardanoscan](${explorerTxUrl(txHash)})); pay by ${deadline(l.payByTime)}, submit result ${deadline(l.submitResultTime)}, unlock ${deadline(l.unlockTime)}, dispute ${deadline(l.externalDisputeUnlockTime)} (SGT) |`,
+    resultRow,
     `| Status | ${MASUMI_LOCK_LABEL} |`,
     "",
   ].join("\n");

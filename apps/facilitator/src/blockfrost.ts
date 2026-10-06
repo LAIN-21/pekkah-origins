@@ -1,4 +1,5 @@
 import type { TxStatus } from "@pekkah/protocol";
+import type { ChainRequest, ChainResponse } from "./app.js";
 
 export interface BlockfrostConfig {
   baseUrl: string;
@@ -42,5 +43,26 @@ export async function lookupTx(
     found: true,
     ...(tx.block ? { block: tx.block } : {}),
     ...(confirmations !== undefined ? { confirmations } : {}),
+  };
+}
+
+/** One allowlisted call from the chain passthrough, with the project id added here. */
+export async function forwardToBlockfrost(
+  config: BlockfrostConfig,
+  request: ChainRequest,
+): Promise<ChainResponse> {
+  const res = await fetch(`${config.baseUrl.replace(/\/+$/, "")}${request.path}${request.search}`, {
+    method: request.method,
+    headers: {
+      project_id: config.projectId,
+      ...(request.contentType ? { "content-type": request.contentType } : {}),
+    },
+    ...(request.body ? { body: request.body } : {}),
+    signal: AbortSignal.timeout(30_000),
+  });
+  return {
+    status: res.status,
+    contentType: res.headers.get("content-type") ?? "application/json",
+    body: Buffer.from(await res.arrayBuffer()),
   };
 }
