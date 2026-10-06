@@ -99,6 +99,28 @@ describe("probe", () => {
     );
   });
 
+  it("starts no job or container after Ctrl-C", async () => {
+    const abort = new AbortController();
+    const { d, dockerCalls } = deps({
+      signal: abort.signal,
+      docker: async (args) => {
+        dockerCalls.push(args);
+        if (args[0] === "version") return ok("27.3.1");
+        if (args[0] === "info") return ok('{"nvidia":{}}');
+        if (args[0] === "image") return ok("sha256:abc");
+        return ok("NVIDIA L4, 23034, 570.86.15");
+      },
+      runFractal: vi.fn(async () => {
+        abort.abort("probe stopped (SIGINT)");
+        return sha("tiny");
+      }),
+    });
+    const checks = await probe({ fractalImage: "img", cpus: 1, memory: "1g" }, d);
+    expect(d.runFractal).toHaveBeenCalledOnce();
+    expect(checks.map((c) => c.name)).toEqual(["docker", "image", "overhead"]);
+    expect(dockerCalls.some((a) => a[0] === "run")).toBe(false);
+  });
+
   it("stops after the docker check when Docker is unreachable", async () => {
     const { d, dockerCalls } = deps({
       docker: async (args) => {

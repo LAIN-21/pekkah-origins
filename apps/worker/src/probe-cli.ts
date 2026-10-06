@@ -20,6 +20,11 @@ export async function runProbeCli(): Promise<number> {
     DATA_DIR: z.string().min(1).default("/var/lib/pekkah"),
   });
   const hardware = await detectHardware();
+  if (env.JOB_CPUS !== undefined && env.JOB_CPUS > hardware.vcpus) {
+    // docker run --cpus would refuse every job with a message that doesn't say why.
+    console.error(`JOB_CPUS is ${env.JOB_CPUS}, but this machine has ${hardware.vcpus} vCPUs.`);
+    return 1;
+  }
   const sized = jobSizing(hardware);
   const options = {
     fractalImage: env.FRACTAL_IMAGE,
@@ -58,6 +63,7 @@ export async function runProbeCli(): Promise<number> {
       return createHash("sha256").update(out.data).digest("hex");
     },
     challenge: () => randomChallenge(),
+    signal: abort.signal,
     now: () => performance.now(),
     print: (line) => console.log(line),
   });

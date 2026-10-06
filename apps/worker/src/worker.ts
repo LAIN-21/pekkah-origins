@@ -10,7 +10,7 @@ export function refusalMessage(refusal: Refusal, workerId: string): string {
   const head = `The market refused worker ${workerId} (${refusal.code}): ${refusal.message}.`;
   const hint =
     refusal.code === "unauthorized"
-      ? "An allowlisted id needs its own WORKER_TOKEN. Without a token, this market must have open join on."
+      ? "Check WORKER_ID and WORKER_TOKEN: an allowlisted id needs its own token."
       : "Check the prices and the settings in the worker's env.";
   return `${head} ${hint} Not reconnecting.`;
 }

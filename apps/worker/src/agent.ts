@@ -122,6 +122,8 @@ export class WorkerAgent {
 
   private scheduleHeartbeat(): void {
     clearTimeout(this.heartbeatTimer);
+    // A heartbeat or job still running at stop() must not start the timer again.
+    if (this.stopped) return;
     this.heartbeatTimer = setTimeout(
       async () => {
         await this.heartbeat();

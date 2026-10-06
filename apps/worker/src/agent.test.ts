@@ -102,7 +102,7 @@ describe("refusal message", () => {
       "B",
     );
     expect(text).toContain("refused worker B (unauthorized)");
-    expect(text).toContain("WORKER_TOKEN");
+    expect(text).toContain("WORKER_ID and WORKER_TOKEN");
     expect(text).toContain("Not reconnecting");
   });
 });

@@ -27,6 +27,8 @@ export interface ProbeDeps {
   runFractal: (jobId: string, params: FractalParams, deadlineSec: number) => Promise<string>;
   challenge: () => number;
   now: () => number;
+  /** Aborted on Ctrl-C: no further job or container starts. */
+  signal?: AbortSignal;
   print: (line: string) => void;
 }
 
@@ -91,6 +93,7 @@ export async function probe(o: ProbeOptions, d: ProbeDeps): Promise<ProbeCheck[]
   const run = randomBytes(3).toString("hex");
   for (const [i, job] of CALIBRATION.fractal.jobs(challenge).entries()) {
     if (job.workload !== "fractal") continue;
+    if (d.signal?.aborted) return checks;
     const expected =
       job.step === "challenge"
         ? CALIB_SHA256[challenge]
@@ -119,6 +122,7 @@ export async function probe(o: ProbeOptions, d: ProbeDeps): Promise<ProbeCheck[]
     }
   }
 
+  if (d.signal?.aborted) return checks;
   if (hw.gpu || nvidiaRuntime) {
     const gpu = await d.docker([
       "run",
