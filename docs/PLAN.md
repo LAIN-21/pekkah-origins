@@ -1,5 +1,7 @@
 # Pekkah build plan
 
+Phase 2 (from Tuesday 6 October, evening) is specified in `docs/PLAN2.md`. For Phase 2 work, PLAN2 wins.
+
 Written Monday 5 October 2026, before kickoff, and revised Tuesday morning (a real Masumi escrow lock became a requirement for the Cardano track; repo and droplet names). This is planning only, with no code. It is the spec for the build; `CLAUDE.md` holds the rules. Where this file differs from the "Pekkah Hackathon Playbook" doc, this file wins (prices, gates, GPU model, scenarios and confirmation policy all changed).
 
 ## Contents
@@ -229,7 +231,7 @@ Masumi is built in two steps. PR-02m, the feasibility gate, makes one real lock 
 - **Buyer side needs nothing extra.** The same x402 client pays: `toClientCardanoSigner` detects `assetTransferMethod: "masumi"`, verifies the seller's signature and the commitment, builds the lock with its inline datum, and adds the collateral. The only Pekkah-side check is the 402-matches-offer rule in 4.7.
 - **Facilitator needs nothing extra.** It already supports `masumi` and verifies the 19-field lock datum. Unregistered seller (no `agentIdentifier`), so no registry validator.
 - **What lands on chain.** The tUSDM price plus tADA collateral (at least about 1.44 tADA, sized from the datum; the client caps it at 15 tADA) locked at the escrow address in Masumi's real `vested_pay` V2 contract, with an inline datum naming the buyer, Seller A, the request hash and four deadlines. Defaults after pay-by (= now + 600 s): submit result +15 min, unlock +35 min, dispute +55 min. The terms are in `extra.terms` (`sellerAddress`, `inputHash`, `payByTime`, `submitResultTime`, `unlockTime`, `externalDisputeUnlockTime`).
-- **Lock only.** `@x402/cardano` has no submit-result, release or refund tooling, and a lock it makes cannot be driven through `masumi-payment-service`. With my tooling the locked test funds stay locked, so keep Masumi test runs to a handful. The CF demo's `masumi/` agent shows submit-result and collect (no licence: reference only). UI label: "Locked in Masumi escrow. Release, refund and dispute tooling is my next step."
+- **Lock only.** `@x402/cardano` has no submit-result, release or refund tooling, and a lock it makes cannot be driven through `masumi-payment-service`. With my tooling the locked test funds stay locked, so keep Masumi test runs to a handful. The CF demo's `masumi/` agent shows submit-result and collect (no licence: reference only). UI label: "Locked in Masumi escrow. Release, refund and dispute tooling is my next step." (Phase 2 builds release: PLAN2 PR-16.)
 - **Who the seller is.** The buyer (my agent) locks the funds; the seller named in the escrow is Seller A (worker A's `PAYOUT_ADDRESS`), and the buyer differs from the seller. Escrow purchases are allowed only for offers whose worker address equals the Masumi seller address, which in practice means worker A; otherwise 409. Nothing reaches the seller: that needs release tooling I don't have.
 - **Wording.** In every Masumi context (UI, receipts, logs, README, write-up, video, deck), the funds are "locked in escrow". Never say the worker was paid or the funds were released.
 
@@ -866,6 +868,8 @@ Never cut: real payments, settle-on-delivery, real workers, failover, the Masumi
 
 ### 12.1 Video, 3:00 or less (recorded from the hosted UI, plus a terminal for chaos)
 
+The final video follows PLAN2 section 3. This storyboard is the Phase 1 safety take.
+
 | Time | Scene |
 | --- | --- |
 | 0:00 | The market: three real workers, measured speeds, prices |
@@ -1034,6 +1038,8 @@ results/
 ---
 
 ## 14. Known risks and honest limits
+
+PLAN2 section 11 replaces these limits after Phase 2.
 
 These go into the README and the write-up as they are.
 
