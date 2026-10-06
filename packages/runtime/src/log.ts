@@ -1,7 +1,12 @@
 import { pino } from "pino";
 
-/** Any key that matches is redacted, at any depth (CLAUDE.md, Secrets). */
-export const SECRET_KEY = /mnemonic|token|secret|project_?id|authorization/i;
+/**
+ * Any key that matches is redacted, at any depth. CLAUDE.md's list (mnemonic, token, secret,
+ * project id, authorization) plus credential names it implies. Not a bare `seed`: image params
+ * carry a non-secret seed that logs should show.
+ */
+export const SECRET_KEY =
+  /mnemonic|token|secret|project_?id|authorization|passw(or)?d|passphrase|api[-_]?key|private[-_]?key|cookie/i;
 export const REDACTED = "[redacted]";
 
 export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {

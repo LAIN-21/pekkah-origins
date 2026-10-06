@@ -82,6 +82,29 @@ describe("redact", () => {
     });
   });
 
+  it("redacts password, API-key, private-key and cookie fields", () => {
+    const keys = [
+      "password",
+      "dbPassword",
+      "passwd",
+      "passphrase",
+      "apiKey",
+      "api_key",
+      "x-api-key",
+      "privateKey",
+      "private_key",
+      "cookie",
+      "set-cookie",
+    ];
+    const out = redact(Object.fromEntries(keys.map((k) => [k, "x"]))) as Record<string, unknown>;
+    for (const key of keys) expect(out[key], key).toBe(REDACTED);
+  });
+
+  it("keeps fields that only look close, such as an image seed", () => {
+    const params = { prompt: "a fox", seed: 7, size: 1024, keyCount: 3, passes: 2 };
+    expect(redact(params)).toEqual(params);
+  });
+
   it("survives cycles", () => {
     const a: Record<string, unknown> = { name: "a" };
     a.self = a;
