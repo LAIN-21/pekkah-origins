@@ -288,20 +288,27 @@ health_check() {
       echo "OK: worker container is running pekkah/worker:local at sha $short"
       ;;
     flux)
-      # Loading and warming the model takes a few minutes.
+      # Loading and warming the model takes about a minute. A failed load is
+      # retried by the server every 30 s, so keep waiting and show its error.
       body=""
-      for i in $(seq 1 90); do
+      local said=""
+      for i in $(seq 1 60); do
         body=$(remote "$host" "cd /opt/pekkah/$project && $compose exec -T flux python -c \"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read().decode())\"" 2>/dev/null) || body=""
         case "$body" in
           *'"ready":true'*) break ;;
-          *'"error"'*) break ;;
+          *'"error"'*)
+            if [ "$body" != "$said" ]; then
+              echo "flux is retrying its load: $body"
+              said=$body
+            fi
+            ;;
         esac
         sleep 10
       done
       echo "flux /health: ${body:-no answer}"
       case "$body" in
         *'"ready":true'*) echo "OK: flux is ready" ;;
-        *) die "flux is not ready after 15 min (scripts/logs.sh flux)" ;;
+        *) die "flux is not ready after 10 min (scripts/logs.sh flux)" ;;
       esac
       ;;
   esac

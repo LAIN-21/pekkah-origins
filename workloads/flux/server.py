@@ -5,10 +5,16 @@ FLUX.1-schnell with the transformer and T5 in 4-bit NF4, everything on the GPU
 One generation at a time. FLUX_MODEL=sdxl loads SDXL base 1.0 behind the same
 API. No internet: weights come read-only from MODELS_DIR, HF_HUB_OFFLINE=1.
 
-  GET  /health    {ready, model, vramUsedGb}
-  POST /generate  {prompt, seed, size, steps} -> PNG bytes
+  GET  /health    {ready, model, vramUsedGb, error?}
+  POST /generate  {prompt, seed, size, steps} -> PNG bytes; X-Steps says how many
+                  steps ran: `steps` for FLUX, 5 x `steps` for SDXL (4 -> 20), so
+                  the time still scales with `steps` the way the market estimates.
+
+If loading fails (for example, the weights aren't there yet), it retries every
+30 s, and /health shows the last error meanwhile.
 """
 
+import gc
 import io
 import logging
 import os
@@ -24,8 +30,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MODEL = os.environ.get("FLUX_MODEL", "flux")
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
-SDXL_STEPS = 20
+SDXL_STEPS_PER_STEP = 5
 LOCK_WAIT_SEC = 120
+LOAD_RETRY_SEC = 30
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("flux")
@@ -67,6 +74,10 @@ def load_pipeline():
     return pipe
 
 
+def model_steps(steps: int) -> int:
+    return steps if MODEL == "flux" else steps * SDXL_STEPS_PER_STEP
+
+
 def render(prompt: str, seed: int, size: int, steps: int) -> bytes:
     pipe = state["pipe"]
     generator = torch.Generator("cpu").manual_seed(seed)
@@ -77,7 +88,7 @@ def render(prompt: str, seed: int, size: int, steps: int) -> bytes:
                 prompt=prompt,
                 height=size,
                 width=size,
-                num_inference_steps=steps,
+                num_inference_steps=model_steps(steps),
                 guidance_scale=0.0,
                 max_sequence_length=256,
                 generator=generator,
@@ -87,7 +98,7 @@ def render(prompt: str, seed: int, size: int, steps: int) -> bytes:
                 prompt=prompt,
                 height=size,
                 width=size,
-                num_inference_steps=SDXL_STEPS,
+                num_inference_steps=model_steps(steps),
                 generator=generator,
             )
         buf = io.BytesIO()
@@ -107,19 +118,29 @@ def vram_used_gb() -> float | None:
 
 
 def warm_up() -> None:
-    try:
-        started = time.monotonic()
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        state["pipe"] = load_pipeline()
-        loaded = time.monotonic()
-        log.info("loaded %s in %.1f s, VRAM in use %.2f GiB", MODEL, loaded - started, vram_used_gb())
-        render("warm-up", seed=0, size=512, steps=1)
-        log.info("warm-up done in %.1f s", time.monotonic() - loaded)
-        state["ready"] = True
-    except Exception as exc:  # noqa: BLE001 - reported through /health and the log
-        state["error"] = f"{type(exc).__name__}: {exc}"[:500]
-        log.exception("loading %s failed", MODEL)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            started = time.monotonic()
+            state["pipe"] = load_pipeline()
+            loaded = time.monotonic()
+            log.info("loaded %s in %.1f s, VRAM in use %.2f GiB", MODEL, loaded - started, vram_used_gb())
+            render("warm-up", seed=0, size=512, steps=1)
+            log.info("warm-up done in %.1f s", time.monotonic() - loaded)
+            state["error"] = None
+            state["ready"] = True
+            return
+        except Exception as exc:  # noqa: BLE001 - reported through /health and the log
+            state["pipe"] = None
+            state["error"] = f"attempt {attempt}: {type(exc).__name__}: {exc}"[:500]
+            log.exception("loading %s failed (attempt %d), retrying in %d s", MODEL, attempt, LOAD_RETRY_SEC)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            time.sleep(LOAD_RETRY_SEC)
 
 
 @asynccontextmanager
@@ -166,9 +187,10 @@ def generate(req: GenerateRequest) -> Response:
         raise HTTPException(status_code=500, detail=f"generation failed: {type(exc).__name__}") from exc
     finally:
         generate_lock.release()
-    log.info("generated size=%d steps=%d seed=%d in %d ms", req.size, req.steps, req.seed, duration_ms)
+    ran = model_steps(req.steps)
+    log.info("generated size=%d steps=%d seed=%d in %d ms", req.size, ran, req.seed, duration_ms)
     return Response(
         content=png,
         media_type="image/png",
-        headers={"X-Duration-Ms": str(duration_ms), "X-Model": MODEL},
+        headers={"X-Duration-Ms": str(duration_ms), "X-Model": MODEL, "X-Steps": str(ran)},
     )

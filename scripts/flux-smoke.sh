@@ -40,14 +40,41 @@ case "$cmd" in
     ;;
 
   egress)
-    out=$(remote a "cd /opt/pekkah/flux && $COMPOSE exec -T flux python -c \"import urllib.request; urllib.request.urlopen('https://huggingface.co', timeout=8); print('REACHED')\"" 2>&1 || true)
+    # The probe prints REACHED or BLOCKED for each target. A probe that doesn't
+    # run (flux stopped, exec failed) proves nothing, so it fails the check.
+    if ! out=$(remote a "cd /opt/pekkah/flux && $COMPOSE exec -T flux python -" 2>&1 <<'PY'
+import socket, urllib.request
+
+try:
+    urllib.request.urlopen("https://huggingface.co", timeout=8)
+    print("REACHED https://huggingface.co")
+except Exception as e:
+    print(f"BLOCKED https://huggingface.co: {type(e).__name__}: {e}")
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect(("1.1.1.1", 443))
+    print("REACHED 1.1.1.1:443")
+except OSError as e:
+    print(f"BLOCKED 1.1.1.1:443: {e}")
+PY
+    ); then
+      echo "INCONCLUSIVE: the probe couldn't run in the flux container:"
+      printf '%s\n' "$out" | tail -3
+      exit 1
+    fi
+    printf '%s\n' "$out"
     case "$out" in
       *REACHED*)
-        echo "FAIL: the flux container reached https://huggingface.co"
+        echo "FAIL: the flux container has internet access"
         exit 1
         ;;
+      *"BLOCKED https://huggingface.co"*"BLOCKED 1.1.1.1:443"*)
+        echo "OK: no egress from the flux container"
+        ;;
       *)
-        echo "OK: no egress from the flux container ($(printf '%s' "$out" | grep -oE '[A-Za-z]+Error[^)]*' | tail -1))"
+        echo "INCONCLUSIVE: unexpected probe output"
+        exit 1
         ;;
     esac
     ;;
