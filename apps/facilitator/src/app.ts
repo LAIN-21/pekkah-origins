@@ -35,7 +35,7 @@ import express from "express";
 export interface FacilitatorAppOptions {
   facilitator: x402Facilitator;
   confirmationTimeoutMs: number;
-  lookupTx(txHash: string): Promise<TxStatus>;
+  lookupTx(txHash: string, ttlSlot?: bigint): Promise<TxStatus>;
   log: Logger;
 }
 
@@ -129,11 +129,12 @@ export function createFacilitatorApp(options: FacilitatorAppOptions): express.Ex
   app.get("/tx/:hash", async (req, res) => {
     try {
       const hash = req.params.hash;
-      if (!TX_HASH.test(hash)) {
+      const ttl = req.query.ttlSlot;
+      if (!TX_HASH.test(hash) || (ttl !== undefined && !/^\d{1,15}$/.test(String(ttl)))) {
         res.status(400).json({ error: "invalid_tx_hash" });
         return;
       }
-      res.json(await options.lookupTx(hash));
+      res.json(await options.lookupTx(hash, ttl === undefined ? undefined : BigInt(String(ttl))));
     } catch (error) {
       log.error({ err: error }, "tx lookup failed");
       res.status(502).json({ error: "lookup_failed" });

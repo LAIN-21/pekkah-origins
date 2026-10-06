@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { EnvError, envFlag, envPort, isUnset, loadLocalEnv, parseEnvShape } from "./env.js";
 import { REDACTED, redact } from "./log.js";
-import { assertMnemonic, mnemonicProblem } from "./mnemonic.js";
+import { assertMnemonic, mnemonicProblem, normalizeMnemonic } from "./mnemonic.js";
 
 describe("env", () => {
   it("treats empty strings and the placeholder as unset", () => {
@@ -135,6 +135,12 @@ describe("mnemonic checks", () => {
       const message = mnemonicProblem(bad) ?? "";
       for (const word of bad.split(" ")) expect(message).not.toContain(word);
     }
+  });
+
+  it("normalizes case and whitespace the same way for the check and the library", () => {
+    const messy = `  ${"ABANDON\t ".repeat(11)}About \n`;
+    expect(normalizeMnemonic(messy)).toBe(valid);
+    expect(assertMnemonic("BUYER_MNEMONIC", messy)).toBe(valid);
   });
 
   it("throws with the variable name only", () => {

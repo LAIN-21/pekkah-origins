@@ -120,7 +120,10 @@ const after = await buyer.balance();
 console.log(`balance    ${show(after)}`);
 if (values.fail && result.txHash) {
   console.log(
-    `check      curl -s <facilitator>/tx/${result.txHash}  (expect found:false after 120 s)`,
+    `ttlSlot    ${result.ttlSlot ?? "?"} (the signed tx can never land from this slot on)`,
+  );
+  console.log(
+    `check      curl -s '<facilitator>/tx/${result.txHash}?ttlSlot=${result.ttlSlot ?? ""}'  (found:false; final:true once the window has closed)`,
   );
 }
 

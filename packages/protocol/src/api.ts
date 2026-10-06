@@ -25,12 +25,18 @@ export const FacilitatorHealth = z.object({
 });
 export type FacilitatorHealth = z.infer<typeof FacilitatorHealth>;
 
-/** GET /api/tx/:hash (the facilitator's GET /tx/:hash, from Blockfrost). */
+/**
+ * GET /api/tx/:hash (the facilitator's GET /tx/:hash?ttlSlot=, from Blockfrost). `found: false`
+ * means no block holds the transaction yet: it can still land until its validity window
+ * closes. `final: true` says the window has closed (the chain is past `ttlSlot`), so a
+ * transaction that is not found can never land.
+ */
 export const TxStatus = z.object({
   found: z.boolean(),
   /** Block hash, once included. */
   block: z.string().optional(),
   confirmations: z.number().int().nonnegative().optional(),
+  final: z.boolean().optional(),
 });
 export type TxStatus = z.infer<typeof TxStatus>;
 

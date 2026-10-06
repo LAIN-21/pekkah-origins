@@ -206,7 +206,7 @@ Correlate in hooks by computing txHash from `ctx.paymentPayload` (fact 5), and t
 
 ### 4.6 Facilitator app (`apps/facilitator`)
 
-A port of the MIT starter's `src/facilitator.ts`, credited in a header comment. Changes: config through zod-validated env; `GET /health` returns `{ ok, network, confirmationTimeoutMs }`; `GET /tx/:hash` returns `{ found, block?, confirmations? }` from Blockfrost (proof that a cancelled payment never landed; deployed, it's reached through the market's `GET /api/tx/:hash`, since the facilitator is never published); it binds `127.0.0.1` locally and `0.0.0.0` only inside the compose network, never published.
+A port of the MIT starter's `src/facilitator.ts`, credited in a header comment. Changes: config through zod-validated env; `GET /health` returns `{ ok, network, confirmationTimeoutMs }`; `GET /tx/:hash` returns `{ found, block?, confirmations? }` from Blockfrost; with `?ttlSlot=<the signed tx's TTL>` it also returns `final: true` once the chain is past that slot (a 404 alone only means "not in a block yet": the transaction could still land until its validity window closes). Together they are the proof that a cancelled payment never landed ( deployed, it's reached through the market's `GET /api/tx/:hash`, since the facilitator is never published); it binds `127.0.0.1` locally and `0.0.0.0` only inside the compose network, never published.
 
 ### 4.7 Buyer package (`packages/buyer`)
 

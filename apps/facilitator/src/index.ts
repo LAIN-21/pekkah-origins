@@ -38,7 +38,7 @@ facilitator.register(
 const app = createFacilitatorApp({
   facilitator,
   confirmationTimeoutMs: env.CONFIRMATION_TIMEOUT_MS,
-  lookupTx: (hash) => lookupTx(blockfrost, hash),
+  lookupTx: (hash, ttlSlot) => lookupTx(blockfrost, hash, ttlSlot),
   log,
 });
 

@@ -1,3 +1,4 @@
+import { MAX_TIMEOUT_SECONDS } from "@pekkah/protocol";
 import type { SettleResponse, VerifyResponse } from "@x402/core/types";
 
 // PaymentOperations (PLAN 4.4): txHash → what that payment bought and how far it got.
@@ -23,13 +24,62 @@ export type ClaimResult<T> =
   | { ok: true; record: PaymentRecord<T>; resumed: boolean }
   | {
       ok: false;
-      reason: "offer_already_purchased" | "payment_bound_elsewhere" | "payload_mismatch";
+      reason:
+        | "offer_already_purchased"
+        | "payment_bound_elsewhere"
+        | "payload_mismatch"
+        | "payment_expired";
       holder?: string;
     };
+
+export interface PaymentOperationsOptions {
+  now?: () => number;
+  /**
+   * An unsettled claim older than this can never settle: its signed transaction's validity
+   * window (maxTimeoutSeconds) has closed. It no longer holds its resource.
+   */
+  leaseMs?: number;
+  /** How long settled payments are kept, so a replayed request gets the same answer. */
+  retainMs?: number;
+}
 
 export class PaymentOperations<T = unknown> {
   private readonly byTx = new Map<string, PaymentRecord<T>>();
   private readonly byKey = new Map<string, string>();
+  private readonly now: () => number;
+  private readonly leaseMs: number;
+  private readonly retainMs: number;
+  private lastSweep = 0;
+
+  constructor(options: PaymentOperationsOptions = {}) {
+    this.now = options.now ?? Date.now;
+    this.leaseMs = options.leaseMs ?? MAX_TIMEOUT_SECONDS * 1000;
+    this.retainMs = options.retainMs ?? 6 * 60 * 60 * 1000;
+  }
+
+  private expired(record: PaymentRecord<T>): boolean {
+    return !record.settle && this.now() - record.createdAt >= this.leaseMs;
+  }
+
+  private evict(record: PaymentRecord<T>): void {
+    this.byTx.delete(record.txHash);
+    if (this.byKey.get(record.key) === record.txHash) this.byKey.delete(record.key);
+  }
+
+  /** Drops claims past their lease and settled payments past retention. */
+  sweep(): void {
+    const now = this.now();
+    this.lastSweep = now;
+    for (const record of this.byTx.values()) {
+      if (this.expired(record) || (record.settle && now - record.createdAt >= this.retainMs)) {
+        this.evict(record);
+      }
+    }
+  }
+
+  size(): number {
+    return this.byTx.size;
+  }
 
   get(txHash: string): PaymentRecord<T> | undefined {
     return this.byTx.get(txHash);
@@ -46,6 +96,11 @@ export class PaymentOperations<T = unknown> {
    */
   claim(txHash: string, key: string, fingerprint: string): ClaimResult<T> {
     const existing = this.byTx.get(txHash);
+    if (existing && this.expired(existing)) {
+      this.evict(existing);
+      return { ok: false, reason: "payment_expired" };
+    }
+    if (this.now() - this.lastSweep >= 60_000) this.sweep();
     if (existing) {
       if (existing.key !== key) {
         return { ok: false, reason: "payment_bound_elsewhere", holder: existing.key };
@@ -55,14 +110,18 @@ export class PaymentOperations<T = unknown> {
     }
     const holder = this.byKey.get(key);
     if (holder && holder !== txHash) {
-      return { ok: false, reason: "offer_already_purchased", holder };
+      const held = this.byTx.get(holder);
+      if (held && !this.expired(held)) {
+        return { ok: false, reason: "offer_already_purchased", holder };
+      }
+      if (held) this.evict(held);
     }
     const record: PaymentRecord<T> = {
       txHash,
       key,
       fingerprint,
       emitted: new Set(),
-      createdAt: Date.now(),
+      createdAt: this.now(),
     };
     this.byTx.set(txHash, record);
     this.byKey.set(key, txHash);

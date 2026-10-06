@@ -91,4 +91,41 @@ describe("PaymentOperations", () => {
     ops.markCanceled(TX2, "handler_failed");
     expect(ops.get(TX2)?.canceled).toBeUndefined();
   });
+
+  it("frees a resource whose unsettled claim outlived the 600 s validity window", () => {
+    let now = 0;
+    const ops = new PaymentOperations({ now: () => now });
+    ops.claim(TX1, "offer-1", "fp1");
+    now = 599_000;
+    expect(ops.claim(TX2, "offer-1", "fp2")).toMatchObject({ reason: "offer_already_purchased" });
+    now = 600_000;
+    expect(ops.claim(TX2, "offer-1", "fp2")).toMatchObject({ ok: true, resumed: false });
+    expect(ops.holder("offer-1")).toBe(TX2);
+    expect(ops.get(TX1)).toBeUndefined();
+  });
+
+  it("refuses to resume an expired unsettled payment, and frees its resource", () => {
+    let now = 0;
+    const ops = new PaymentOperations({ now: () => now });
+    ops.claim(TX1, "offer-1", "fp1");
+    now = 601_000;
+    expect(ops.claim(TX1, "offer-1", "fp1")).toEqual({ ok: false, reason: "payment_expired" });
+    expect(ops.holder("offer-1")).toBeUndefined();
+  });
+
+  it("keeps settled payments for replays until retention ends, then sweeps everything stale", () => {
+    let now = 0;
+    const ops = new PaymentOperations({ now: () => now, retainMs: 3_600_000 });
+    ops.claim(TX1, "offer-1", "fp1");
+    ops.recordSettle(TX1, { success: true, transaction: TX1, network: "cardano:preprod" });
+    for (let i = 0; i < 50; i++) ops.claim(`${i}`.padStart(64, "f"), `offer-x${i}`, "fp");
+    expect(ops.size()).toBe(51);
+    now = 700_000;
+    ops.sweep();
+    expect(ops.size()).toBe(1);
+    expect(ops.claim(TX1, "offer-1", "fp1")).toMatchObject({ ok: true, resumed: true });
+    now = 3_700_000;
+    ops.sweep();
+    expect(ops.size()).toBe(0);
+  });
 });

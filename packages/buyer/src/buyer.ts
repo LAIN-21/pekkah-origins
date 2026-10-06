@@ -76,6 +76,8 @@ export interface BuyResult {
   txHash?: string;
   /** The PAYMENT-SIGNATURE header that was sent, for a resumed retry. */
   paymentHeader?: string;
+  /** The signed transaction's TTL: from this slot on it can never land. */
+  ttlSlot?: string;
   /** From PAYMENT-RESPONSE: present only when the payment settled. */
   settle?: SettleResponse;
   /** A first signature the facilitator refused on a stale chain view; it was never broadcast. */
@@ -89,6 +91,7 @@ interface Pending {
   offerId?: string;
   txHash?: string;
   paymentHeader?: string;
+  ttlSlot?: string;
   inputs?: string[];
   refused?: { txHash: string; reason: string };
 }
@@ -104,10 +107,10 @@ export interface Buyer {
 
 function buyerSigner(config: BuyerConfig) {
   // Checked first: the wallet library would put an unknown word in its error message.
-  assertMnemonic("BUYER_MNEMONIC", config.mnemonic);
+  const mnemonic = assertMnemonic("BUYER_MNEMONIC", config.mnemonic);
   try {
     return toClientCardanoSigner({
-      mnemonic: config.mnemonic,
+      mnemonic,
       network: NETWORK,
       accountIndex: config.accountIndex ?? 0,
       provider: { blockfrost: config.blockfrost, requestTimeoutMs: 30_000 },
@@ -150,6 +153,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
     const txHash = tx.txHash;
     pending.txHash = txHash;
     pending.inputs = tx.inputs;
+    if (tx.ttlSlot !== undefined) pending.ttlSlot = tx.ttlSlot.toString();
     pending.paymentHeader = http.encodePaymentSignatureHeader(paymentPayload)["PAYMENT-SIGNATURE"];
     ledger.record(pending.runId, paymentPayload.accepted.amount);
     try {
@@ -223,6 +227,7 @@ export function createBuyer(config: BuyerConfig): Buyer {
             body,
             ...(current.txHash ? { txHash: current.txHash } : {}),
             ...(current.paymentHeader ? { paymentHeader: current.paymentHeader } : {}),
+            ...(current.ttlSlot ? { ttlSlot: current.ttlSlot } : {}),
             ...(current.refused ? { refused: current.refused } : {}),
             ...(settle ? { settle } : {}),
             durationMs: Date.now() - started,

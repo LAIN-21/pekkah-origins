@@ -23,9 +23,9 @@ beforeAll(async () => {
   const app = createFacilitatorApp({
     facilitator,
     confirmationTimeoutMs: 75_000,
-    lookupTx: async (hash) => {
-      lookups.push(hash);
-      return { found: false };
+    lookupTx: async (hash, ttlSlot) => {
+      lookups.push(ttlSlot === undefined ? hash : `${hash}@${ttlSlot}`);
+      return ttlSlot === undefined ? { found: false } : { found: false, final: true };
     },
     log: createLogger("facilitator-test"),
   });
@@ -59,7 +59,12 @@ describe("facilitator app", () => {
     expect((await fetch(`${url}/tx/nothex`)).status).toBe(400);
     const hash = "ab".repeat(32);
     expect(await (await fetch(`${url}/tx/${hash}`)).json()).toEqual({ found: false });
-    expect(lookups).toEqual([hash]);
+    expect(await (await fetch(`${url}/tx/${hash}?ttlSlot=123`)).json()).toEqual({
+      found: false,
+      final: true,
+    });
+    expect((await fetch(`${url}/tx/${hash}?ttlSlot=abc`)).status).toBe(400);
+    expect(lookups).toEqual([hash, `${hash}@123`]);
   });
 
   it("answers 400 to a verify or settle without a payment", async () => {
