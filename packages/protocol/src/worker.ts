@@ -28,12 +28,13 @@ export const WorkerPrice = z.object({
 export type WorkerPrice = z.infer<typeof WorkerPrice>;
 
 export const FractalCalibration = z.object({
-  /** Measured dispatch-to-result time of the `tiny` preset. */
+  /** Measured dispatch-to-result time of the `tiny` preset (the faster of two runs). */
   overheadSec: z.number().nonnegative(),
-  /** Measured dispatch-to-result time of the `calib` challenge view. */
+  /** Measured dispatch-to-result time of the timed calibration render (hd-fast). */
   calibSec: z.number().nonnegative(),
+  /** Seconds per hd-heavy-equivalent iteration of work (`PRESET_COST`, PLAN 6.2). */
   secPerIter: z.number().positive(),
-  /** True only when sha256(result) matched the committed reference for the challenge. */
+  /** True only when both answers (the challenge view and the timed render) matched. */
   verified: z.boolean(),
   challenge: z
     .number()

@@ -12,8 +12,11 @@ import {
 export type CalibrationJob =
   | {
       workload: "fractal";
-      /** `overhead` → overheadSec (fixed cost); `challenge` → calibSec, answer checked. */
-      step: "overhead" | "challenge";
+      /**
+       * `overhead` → overheadSec (fixed cost); `challenge` → a random view, answer checked;
+       * `rate` → calibSec, a real hd-fast render (answer checked) that sets the speed.
+       */
+      step: "overhead" | "challenge" | "rate";
       params: FractalParams;
       deadlineSec: number;
       /** True when the result's sha256 must equal the committed reference. */
@@ -61,6 +64,15 @@ export const CALIBRATION: Record<WorkloadName, CalibrationPlan> = {
           workload: "fractal",
           step: "challenge",
           params: FractalParams.parse({ preset: "calib", challenge, format: "raw" }),
+          deadlineSec: CALIBRATION_DEADLINE_SEC,
+          checked: true,
+        },
+        // The challenge views are too small to keep 8 cores busy, so they misjudge speed by
+        // core count. A real render parallelises like the jobs it prices.
+        {
+          workload: "fractal",
+          step: "rate",
+          params: FractalParams.parse({ preset: "hd-fast", palette: "ocean", format: "png" }),
           deadlineSec: CALIBRATION_DEADLINE_SEC,
           checked: true,
         },

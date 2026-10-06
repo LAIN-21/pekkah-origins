@@ -370,10 +370,10 @@ The agent accepts the exact offer at the top. Otherwise it accepts the counter-o
 
 The fixed cost of a job (container start, imports, transfer: 1 to 2 s) must not be scaled with the work, or the estimates for big jobs come out far too close together to tell B from C.
 
-- fractal: `estSec = overheadSec + secPerIter × presetIters × 1.15`, where:
-  - `overheadSec` = the measured dispatch-to-result time of the `tiny` preset (8×8, maxIter 1);
-  - `secPerIter = max(calibSec − overheadSec, 0.05) / calibIters[challenge]`;
-  - `calibIters[]` and `presetIters` are the exact total iteration counts of each calibration view and preset, computed once by `pnpm calib:ref` and committed in `packages/protocol`. The views differ in work, so a pixel count is not enough.
+- fractal: `estSec = overheadSec + secPerIter × presetCost × 1.15`, where:
+  - `overheadSec` = the measured dispatch-to-result time of the `tiny` preset (8×8, maxIter 1), the faster of two runs (the first job after a connect can run cold);
+  - `secPerIter = max(calibSec − overheadSec, 0.05) / presetCost["hd-fast"]`, where `calibSec` is the measured time of a real hd-fast render whose answer is checked (6.5);
+  - `presetCost` is each preset's work in hd-heavy-equivalent iterations, measured on workers B and C by `pnpm measure --costs --write` and committed in `packages/protocol` (`PRESET_COST`). Exact iteration counts miss per-sample costs (hd-fast costs 1.4 times its iterations), and the small challenge views keep 8 cores only partly busy, so timing them misjudged B by up to 2 times.
 - image: `estSec = 1.0 + secImage1024x4 × (steps / 4) × (size / 1024)² × 1.2`, where `secImage1024x4` is a measured real generation at 1024², 4 steps.
 
 ### 6.3 Presets (starting values; PR-05 tunes them on real hardware)
@@ -405,7 +405,7 @@ The public run button offers a fixed list of 5 prompts. Free text exists only in
 ### 6.5 Calibration
 
 - Calibration is generic, built in PR-04: `packages/protocol` defines, per workload, the calibration jobs and whether their answers can be checked. The market runs them on `hello`, and again when a workload first appears in a worker's `warm` list. PR-07b then needs no market change.
-- fractal: the market sets the worker to `calibrating` and dispatches `{ preset: "tiny" }` (→ `overheadSec`), then `{ preset: "calib", challenge: random 0..7, format: "raw" }`. It times dispatch → result and compares sha256(result) with `CALIB_SHA256[challenge]`. Match → `online` with `{ overheadSec, calibSec, secPerIter, verified: true }`. Mismatch → `untrusted`, which excludes the worker.
+- fractal: the market sets the worker to `calibrating` and dispatches `{ preset: "tiny" }` twice (→ `overheadSec`, the faster run), then `{ preset: "calib", challenge: random 0..7, format: "raw" }`, whose sha256 must equal `CALIB_SHA256[challenge]`, then a real render `{ preset: "hd-fast", palette: "ocean", format: "png" }`, timed dispatch → result (→ `calibSec`), whose sha256 must equal `CALIB_RATE_SHA256`. Both match → `online` with `{ overheadSec, calibSec, secPerIter, verified: true }`. A mismatch → `untrusted`, which excludes the worker.
 - The 8 reference hashes and the iteration totals are produced in PR-04 by running the container (`pnpm calib:ref`) and committed. Integer arithmetic makes them identical on every CPU.
 - image: one timed, unverified generation at 1024², 4 steps, seed 42, a fixed prompt → `secImage1024x4` (about 10 s on A, once per join).
 - Recalibrate on every reconnect. The UI shows "measured 3.1 s ✓ (answer checked)".

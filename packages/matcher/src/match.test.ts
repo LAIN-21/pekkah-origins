@@ -92,7 +92,7 @@ describe("the plan's scenarios (6.4)", () => {
     expect(r.counterOffer?.workerId).toBe("C");
     expect(r.counterOffer?.priceAtomic).toBe("20000");
     expect(r.counterOffer?.reason).toBe(
-      "No offer at or below $0.015. Market price $0.03. Next best: C at $0.02, about 11 s",
+      "No offer at or below $0.015. Market price $0.03. Next best: C at $0.02, about 14 s",
     );
     expect(reasons(r)).toEqual({
       A: "over_budget: $0.05 > $0.015",

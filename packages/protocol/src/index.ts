@@ -1,5 +1,6 @@
 export * from "./api.js";
 export * from "./calibration.js";
+export * from "./calibration-cost.js";
 export * from "./calibration-ref.js";
 export * from "./constants.js";
 export * from "./events.js";
