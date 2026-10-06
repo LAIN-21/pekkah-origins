@@ -165,6 +165,14 @@ install -d /var/lib/pekkah
 if [ "$role" = a ] || [ "$role" = flux ]; then
   docker network inspect pekkah-jobs >/dev/null 2>&1 || docker network create --internal pekkah-jobs >/dev/null
 fi
+if [ "$role" = flux ]; then
+  avail=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
+  if [ "$avail" -lt 80 ]; then
+    echo "only ${avail} GB free on /; flux needs at least 80 GB" >&2
+    exit 1
+  fi
+  echo "Disk: ${avail} GB free on /"
+fi
 
 dir=/opt/pekkah/$project
 [ -d "$dir/.git" ] || git clone --quiet "$repo" "$dir"
@@ -278,6 +286,30 @@ health_check() {
       remote "$host" "cd /opt/pekkah/$project && $compose ps --status running --services | grep -qx worker" ||
         die "the worker container is not running (scripts/logs.sh $role)"
       echo "OK: worker container is running pekkah/worker:local at sha $short"
+      ;;
+    flux)
+      # Loading and warming the model takes about a minute. A failed load is
+      # retried by the server every 30 s, so keep waiting and show its error.
+      body=""
+      local said=""
+      for i in $(seq 1 60); do
+        body=$(remote "$host" "cd /opt/pekkah/$project && $compose exec -T flux python -c \"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read().decode())\"" 2>/dev/null) || body=""
+        case "$body" in
+          *'"ready":true'*) break ;;
+          *'"error"'*)
+            if [ "$body" != "$said" ]; then
+              echo "flux is retrying its load: $body"
+              said=$body
+            fi
+            ;;
+        esac
+        sleep 10
+      done
+      echo "flux /health: ${body:-no answer}"
+      case "$body" in
+        *'"ready":true'*) echo "OK: flux is ready" ;;
+        *) die "flux is not ready after 10 min (scripts/logs.sh flux)" ;;
+      esac
       ;;
   esac
 }
