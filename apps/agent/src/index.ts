@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
@@ -5,6 +6,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createBuyer } from "@pekkah/buyer";
 import {
+  AgentRunRequest,
   AssetId,
   DEFAULT_ASSET,
   explorerTxUrl,
@@ -38,6 +40,82 @@ const env = readEnv("agent", {
 const log = createLogger("agent");
 const LAST_PAYMENT = join(homedir(), ".pekkah", "last-payment.json");
 const nextRunId = monotonicFactory();
+
+function sameToken(given: string, expected: string): boolean {
+  const a = createHash("sha256").update(given).digest();
+  return timingSafeEqual(a, createHash("sha256").update(expected).digest());
+}
+
+/**
+ * Service mode (PR-06b): the market hands runs to POST /run (Bearer AGENT_TOKEN). One run at a
+ * time; the buyer's caps hold across runs, and its mutex keeps one payment in flight.
+ */
+function serve(): void {
+  const token = env.AGENT_TOKEN;
+  if (!token) {
+    console.error("agent: env missing AGENT_TOKEN (service mode needs it)");
+    process.exit(1);
+  }
+  const { market, buyer } = connect(env.MARKET_URL);
+  let current: string | null = null;
+  const server = createServer((req, res) => {
+    const send = (status: number, body: unknown) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method === "GET" && req.url === "/health") {
+      return send(200, { ok: true, sha: gitSha(), running: current });
+    }
+    if (req.method !== "POST" || req.url !== "/run") return send(404, { error: "not_found" });
+    const auth = req.headers.authorization ?? "";
+    if (!auth.startsWith("Bearer ") || !sameToken(auth.slice(7), token)) {
+      return send(401, { error: "unauthorized" });
+    }
+    let raw = "";
+    req.on("data", (chunk: Buffer) => {
+      raw += chunk;
+      if (raw.length > 4096) req.destroy();
+    });
+    req.on("end", () => {
+      let parsed: ReturnType<typeof AgentRunRequest.safeParse>;
+      try {
+        parsed = AgentRunRequest.safeParse(JSON.parse(raw));
+      } catch {
+        return send(400, { error: "invalid_request" });
+      }
+      if (!parsed.success) return send(400, { error: "invalid_request" });
+      if (current) return send(409, { error: "run_in_progress", runId: current });
+      const { scenario, runId, promptIndex } = parsed.data;
+      current = runId;
+      send(202, { runId });
+      runScenario({
+        scenario,
+        runId,
+        ...(promptIndex !== undefined ? { promptIndex } : {}),
+        buyer,
+        market,
+        print: (line) => log.info({ runId }, line),
+      })
+        .catch(async (err) => {
+          log.error({ runId, err: err instanceof Error ? err.message : err }, "run crashed");
+          await market.event(
+            "run.failed",
+            { reason: "the agent stopped with an error" },
+            { runId },
+          );
+        })
+        .finally(() => {
+          current = null;
+        });
+    });
+  });
+  server.listen(env.AGENT_PORT, () =>
+    log.info({ port: env.AGENT_PORT }, "agent service listening"),
+  );
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => server.close(() => process.exit(0)));
+  }
+}
 
 function connect(marketUrl: string) {
   const market = new MarketClient(marketUrl.replace(/\/+$/, ""), env.AGENT_TOKEN, (m) =>
@@ -129,18 +207,7 @@ async function cli(argv: string[]): Promise<number> {
 }
 
 if (env.AGENT_MODE === "service") {
-  // PR-06b adds POST /run.
-  const server = createServer((req, res) => {
-    const ok = req.method === "GET" && req.url === "/health";
-    res.writeHead(ok ? 200 : 404, { "content-type": "application/json" });
-    res.end(JSON.stringify(ok ? { ok: true, sha: gitSha() } : { error: "not_found" }));
-  });
-  server.listen(env.AGENT_PORT, () =>
-    log.info({ port: env.AGENT_PORT }, "agent service listening"),
-  );
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => server.close(() => process.exit(0)));
-  }
+  serve();
 } else {
   process.exit(await cli(process.argv.slice(2)));
 }
