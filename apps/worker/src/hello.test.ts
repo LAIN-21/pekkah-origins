@@ -1,6 +1,6 @@
-import { HelloMsg } from "@pekkah/protocol";
+import { HELLO_LIMITS, HelloMsg } from "@pekkah/protocol";
 import { describe, expect, it } from "vitest";
-import { boundHardware, boundHello, HELLO_BOUNDS, type HelloFields } from "./hello.js";
+import { boundHardware, boundHello, type HelloFields } from "./hello.js";
 import { jobSizing } from "./sizing.js";
 
 const PAY_TO = `addr_test1${"q".repeat(98)}`;
@@ -49,18 +49,25 @@ describe("hello bounds (PLAN2 PR-13)", () => {
         },
       }),
     );
-    expect(out.version).toHaveLength(HELLO_BOUNDS.version);
-    expect(out.name).toHaveLength(HELLO_BOUNDS.name);
-    expect(out.schedule).toHaveLength(HELLO_BOUNDS.schedule);
-    expect(out.hardware.cpuModel).toHaveLength(HELLO_BOUNDS.cpuModel);
-    expect(out.hardware.gpu?.name).toHaveLength(HELLO_BOUNDS.gpuName);
-    expect(out.hardware.gpu?.driver).toHaveLength(HELLO_BOUNDS.driver);
+    expect(out.version).toHaveLength(HELLO_LIMITS.version);
+    expect(out.name).toHaveLength(HELLO_LIMITS.name);
+    expect(out.schedule).toHaveLength(HELLO_LIMITS.schedule);
+    expect(out.hardware.cpuModel).toHaveLength(HELLO_LIMITS.cpuModel);
+    expect(out.hardware.gpu?.name).toHaveLength(HELLO_LIMITS.gpuName);
+    expect(out.hardware.gpu?.driver).toHaveLength(HELLO_LIMITS.driver);
+    expect(HelloMsg.safeParse({ type: "hello", ...out, warm: [] }).success).toBe(true);
+  });
+
+  it("sends no token when the worker has none (probation)", () => {
+    const { token: _, ...rest } = hello();
+    const out = boundHello(rest);
+    expect(out).not.toHaveProperty("token");
     expect(HelloMsg.safeParse({ type: "hello", ...out, warm: [] }).success).toBe(true);
   });
 
   it("sends at most 4 prices", () => {
     const prices = Array.from({ length: 6 }, () => ({ workload: "fractal" as const, usd: 0.01 }));
-    expect(boundHello(hello({ prices })).prices).toHaveLength(HELLO_BOUNDS.prices);
+    expect(boundHello(hello({ prices })).prices).toHaveLength(HELLO_LIMITS.prices);
   });
 
   it("never sends an empty CPU model or a GPU without a name", () => {

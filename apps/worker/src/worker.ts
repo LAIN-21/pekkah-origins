@@ -10,7 +10,7 @@ export function refusalMessage(refusal: Refusal, workerId: string): string {
   const head = `The market refused worker ${workerId} (${refusal.code}): ${refusal.message}.`;
   const hint =
     refusal.code === "unauthorized"
-      ? "Check WORKER_ID and WORKER_TOKEN: an allowlisted id needs its own token."
+      ? "Check WORKER_ID and WORKER_TOKEN: an allowlisted id needs its own token, and a worker without a token joins only where the market has open join on."
       : "Check the prices and the settings in the worker's env.";
   return `${head} ${hint} Not reconnecting.`;
 }
@@ -32,7 +32,7 @@ export function runWorker(): void {
     hardware = now;
     return {
       workerId: config.WORKER_ID,
-      token: config.WORKER_TOKEN,
+      ...(config.WORKER_TOKEN ? { token: config.WORKER_TOKEN } : {}),
       version: gitSha(),
       name: config.WORKER_NAME,
       payTo: config.PAYOUT_ADDRESS,

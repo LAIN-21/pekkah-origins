@@ -175,7 +175,9 @@ export class WorkerAgent {
     const msg = parsed.data;
     switch (msg.type) {
       case "welcome":
-        this.o.log.info({ workerId: msg.workerId }, "welcomed by the market");
+        // install.sh reads listedAs from this line: a probation worker is listed under the id
+        // the market gives it, not the one it sent.
+        this.o.log.info({ listedAs: msg.workerId }, "welcomed by the market");
         break;
       case "job.dispatch":
         void this.runJob(msg);
