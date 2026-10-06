@@ -12,7 +12,7 @@ const env = readEnv("worker", {
 const log = createLogger("worker");
 
 log.info(
-  { workerId: env.WORKER_ID, name: env.WORKER_NAME, version: PEKKAH_VERSION, sha: gitSha() },
+  { workerId: env.WORKER_ID, workerName: env.WORKER_NAME, version: PEKKAH_VERSION, sha: gitSha() },
   "worker skeleton up; no market connection yet",
 );
 const idle = setInterval(() => log.info("worker idle"), 60_000);
