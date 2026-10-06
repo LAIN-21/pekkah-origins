@@ -37,6 +37,8 @@ const VALID_FOR_MS = 180_000;
 const AFTER_DEADLINE_MS = 1_000n;
 /** At most this much of the collateral UTxO is put up; the SDK returns the rest. */
 export const MAX_COLLATERAL = 5_000_000n;
+/** The least a collateral return may hold: the SDK refuses one under the minimum UTxO. */
+const MIN_RETURN = 1_500_000n;
 
 export type BuyerClient = ReturnType<typeof buyerClient>;
 
@@ -292,9 +294,16 @@ export function pureAdaReserve(wallet: readonly UTxO.UTxO[]) {
     .sort((a, b) => Number(Assets.lovelaceOf(b.assets) - Assets.lovelaceOf(a.assets)))[0];
   if (!reserve || Assets.lovelaceOf(reserve.assets) < 2_000_000n) return null;
   const lovelace = Assets.lovelaceOf(reserve.assets);
+  // All of it up to 5 tADA; above that 5 tADA, unless the return would fall under its minimum.
+  const collateral =
+    lovelace <= MAX_COLLATERAL
+      ? lovelace
+      : lovelace - MAX_COLLATERAL >= MIN_RETURN
+        ? MAX_COLLATERAL
+        : lovelace - MIN_RETURN;
   return {
     utxo: reserve,
-    collateral: lovelace < MAX_COLLATERAL ? lovelace : MAX_COLLATERAL,
+    collateral,
     isNot: (u: UTxO.UTxO) => !sameRef(u, reserve),
   };
 }

@@ -135,6 +135,8 @@ describe("the refund transaction", () => {
     const reserve = pureAdaReserve([utxo(1, 9_925_000_000n, true), utxo(2, 5_000_000n)]);
     expect(reserve?.collateral).toBe(MAX_COLLATERAL);
     expect(pureAdaReserve([utxo(3, 3_000_000n)])?.collateral).toBe(3_000_000n);
+    // Just over 5 tADA: the return must stay above its minimum.
+    expect(pureAdaReserve([utxo(5, 5_100_000n)])?.collateral).toBe(3_600_000n);
     expect(pureAdaReserve([utxo(4, 1_000_000n)])).toBeNull();
   });
 });
