@@ -69,6 +69,33 @@ worker_tokens() {
   printf '%s' "$out"
 }
 
+# The line for a name whose value comes from other files: WORKER_TOKENS from the
+# worker tokens, the public URLs from the reserved IP in hosts.json. Or nothing.
+derive_line() {
+  local name=$1 target=$2 wid=$3 v=""
+  case "$name" in
+    WORKER_TOKENS)
+      if [ "$(basename "$target")" = market.env ]; then
+        v=$(worker_tokens)
+      else
+        v=$(get_value "$target" WORKER_TOKEN)
+        if is_real "$v"; then v="${wid:-A}:$v"; else v=""; fi
+      fi
+      ;;
+    PUBLIC_HOST | PUBLIC_URL | MARKET_WS_URL)
+      # Local dev has its own URLs.
+      if [ -n "$public_host" ] && [ "$target" != "$LOCAL_ENV" ]; then
+        case "$name" in
+          PUBLIC_HOST) v=$public_host ;;
+          PUBLIC_URL) v="https://$public_host" ;;
+          MARKET_WS_URL) v="wss://$public_host/ws/worker" ;;
+        esac
+      fi
+      ;;
+  esac
+  [ -z "$v" ] || printf '%s=%s' "$name" "$v"
+}
+
 # The local.env line for a seedable name (PAYOUT_ADDRESS comes from
 # SELLER_<id>_ADDRESS), or nothing. Raw, so quoting (mnemonics) is kept.
 seed_line() {
@@ -110,12 +137,19 @@ process() {
       default=${line#*=}
       if [ "$name" = WORKER_TOKENS ]; then [ $pass -eq 2 ] || continue; else [ $pass -eq 1 ] || continue; fi
       if has_name "$target" "$name"; then
-        # A placeholder or an empty value isn't a value: --seed-from-local may fill it.
-        if [ $seed -eq 1 ] && [ "$target" != "$LOCAL_ENV" ] && ! is_real "$(get_value "$target" "$name")"; then
-          value=$(seed_line "$name" "$worker_id")
+        # An empty value or a placeholder isn't a value, so it may be derived or
+        # seeded now. Real values are never touched.
+        if ! is_real "$(get_value "$target" "$name")"; then
+          value=$(derive_line "$name" "$target" "$worker_id")
           if [ -n "$value" ]; then
             replace_line "$target" "$name" "$value"
-            seeded="$seeded $name"
+            derived="$derived $name"
+          elif [ $seed -eq 1 ] && [ "$target" != "$LOCAL_ENV" ]; then
+            value=$(seed_line "$name" "$worker_id")
+            if [ -n "$value" ]; then
+              replace_line "$target" "$name" "$value"
+              seeded="$seeded $name"
+            fi
           fi
         fi
         continue
@@ -127,24 +161,8 @@ process() {
         generated="$generated $name"
         ;;
       esac
-      if [ -z "$value" ] && [ "$name" = WORKER_TOKENS ]; then
-        if [ "$(basename "$target")" = market.env ]; then
-          v=$(worker_tokens)
-        else
-          v=$(get_value "$target" WORKER_TOKEN)
-          [ -z "$v" ] || v="${worker_id:-A}:$v"
-        fi
-        if is_real "$v"; then
-          value="$name=$v"
-          derived="$derived $name"
-        fi
-      fi
-      if [ -z "$value" ] && [ -n "$public_host" ] && [ "$target" != "$LOCAL_ENV" ]; then
-        case "$name" in
-          PUBLIC_HOST) value="$name=$public_host" ;;
-          PUBLIC_URL) value="$name=https://$public_host" ;;
-          MARKET_WS_URL) value="$name=wss://$public_host/ws/worker" ;;
-        esac
+      if [ -z "$value" ]; then
+        value=$(derive_line "$name" "$target" "$worker_id")
         [ -z "$value" ] || derived="$derived $name"
       fi
       if [ -z "$value" ] && [ $seed -eq 1 ] && [ "$target" != "$LOCAL_ENV" ]; then
@@ -182,7 +200,7 @@ process() {
   done
 
   local label=${target#"$PEKKAH_HOME"/}
-  if [ -z "$added$seeded" ]; then
+  if [ -z "$added$seeded$derived" ]; then
     echo "$label: complete, nothing added"
   else
     [ -z "$added" ] || echo "$label: added$added"

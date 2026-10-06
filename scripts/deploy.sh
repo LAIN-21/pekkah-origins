@@ -195,9 +195,9 @@ push_env() {
 compose_up() {
   local host=$1 role=$2 project=$3 compose
   compose=$(remote_compose "$role")
-  remote "$host" "bash -s -- $project $sha $ref $(printf '%q' "$SESSION")" <<REMOTE
+  remote "$host" "bash -s -- $project $sha" <<REMOTE
 set -euo pipefail
-project=\$1 sha=\$2 ref=\$3 session=\$4
+project=\$1 sha=\$2
 cd /opt/pekkah/\$project
 export GIT_SHA=\$sha
 if [ "\$project" = worker ]; then
@@ -216,8 +216,13 @@ else
   $compose build --quiet
   $compose up -d --remove-orphans --quiet-pull
 fi
-printf 'ref=%s\nsha=%s\ntime=%s\nepoch=%s\nsession=%s\n' "\$ref" "\$sha" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$(date +%s)" "\$session" > DEPLOYED
 REMOTE
+}
+
+# Written only after the health check passed, so a failed deploy never claims the host.
+write_deployed() {
+  local host=$1 project=$2
+  remote "$host" "printf 'ref=%s\nsha=%s\ntime=%s\nepoch=%s\nsession=%s\n' $ref $sha \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$(date +%s)\" $(printf '%q' "$SESSION") > /opt/pekkah/$project/DEPLOYED"
 }
 
 env_value() {
@@ -226,7 +231,7 @@ env_value() {
 }
 
 health_check() {
-  local host=$1 role=$2 project=$3 envsrc=$4 compose short body url i
+  local host=$1 role=$2 project=$3 envsrc=$4 compose short body url i rev
   compose=$(remote_compose "$role")
   short=$(printf '%s' "$sha" | cut -c1-7)
   sleep 5
@@ -235,12 +240,16 @@ health_check() {
     market)
       body=""
       for i in $(seq 1 24); do
-        body=$(remote "$host" "cd /opt/pekkah/$project && $compose exec -T market node -e \"fetch('http://127.0.0.1:'+(process.env.MARKET_PORT||8080)+'/api/health').then(r=>r.text()).then(t=>console.log(t),()=>process.exit(1))\"" 2>/dev/null) && break
+        body=$(remote "$host" "cd /opt/pekkah/$project && $compose exec -T market node -e \"fetch('http://127.0.0.1:8080/api/health').then(r=>r.text()).then(t=>console.log(t),()=>process.exit(1))\"" 2>/dev/null) && break
         body=""
         sleep 5
       done
       [ -n "$body" ] || die "market /api/health did not answer inside the container after 2 min"
       echo "market /api/health (inside the container): $body"
+      case "$body" in
+        *"$sha"*) ;;
+        *) die "the market container reports another sha (expected $short)" ;;
+      esac
       url=$(env_value "$envsrc" PUBLIC_URL)
       if [ -z "$url" ] || [ "$url" = "__FILL_ME__" ]; then
         url="http://$(jq -r '.market.reservedIp' "$HOSTS_FILE")"
@@ -253,14 +262,22 @@ health_check() {
         body=""
         sleep 5
       done
-      [ -n "$body" ] || echo "warning: $url/api/health did not answer within 90 s (Caddy may still be getting a certificate)"
-      case "$body" in
-        *"$short"*) echo "OK: the market reports sha $short" ;;
-        *) echo "warning: the health response doesn't contain sha $short" ;;
-      esac
+      if [ -z "$body" ]; then
+        # Only a missing answer is tolerated (Caddy may still be getting a certificate).
+        echo "warning: $url/api/health did not answer within 90 s (Caddy may still be getting a certificate)"
+      else
+        case "$body" in
+          *"$sha"*) echo "OK: $url reports sha $short" ;;
+          *) die "$url serves another revision (expected sha $short)" ;;
+        esac
+      fi
       ;;
     a | b | c)
-      remote "$host" "docker image inspect -f 'pekkah/worker:local revision {{index .Config.Labels \"org.opencontainers.image.revision\"}}' pekkah/worker:local; cd /opt/pekkah/$project && $compose ps --status running --services | grep -qx worker && echo 'OK: worker container is running' || { echo 'worker container is not running'; exit 1; }"
+      rev=$(remote "$host" "docker image inspect -f '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' pekkah/worker:local")
+      [ "$rev" = "$sha" ] || die "pekkah/worker:local has revision '$rev', expected $short"
+      remote "$host" "cd /opt/pekkah/$project && $compose ps --status running --services | grep -qx worker" ||
+        die "the worker container is not running (scripts/logs.sh $role)"
+      echo "OK: worker container is running pekkah/worker:local at sha $short"
       ;;
   esac
 }
@@ -279,6 +296,7 @@ deploy_role() {
   push_env "$host" "$project" "$envsrc"
   compose_up "$host" "$role" "$project"
   health_check "$host" "$role" "$project" "$envsrc"
+  write_deployed "$host" "$project"
   release_lock
   echo "==> $role: deployed $ref @ $(printf '%s' "$sha" | cut -c1-7) to pekkah-$project on $host"
 }

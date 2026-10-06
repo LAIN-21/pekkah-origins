@@ -41,10 +41,11 @@ fi
 
 tf() { terraform -chdir="$TF_DIR" "$@"; }
 
+# On every run, so a stray `terraform init` can never leave this checkout on a
+# state file inside the worktree. No -reconfigure: if .terraform points at a
+# different state path, init fails and says so instead of switching silently.
 ensure_init() {
-  if [ ! -d "$TF_DIR/.terraform" ]; then
-    tf init -input=false -backend-config="path=$STATE" >/dev/null
-  fi
+  tf init -input=false -backend-config="path=$STATE" >/dev/null
 }
 
 case "$cmd" in
