@@ -32,7 +32,7 @@ export function Header({ connection, workersOnline, balance, mode, sourceLabel }
       </div>
       <div className="chips">
         {sourceLabel ? <span className="chip warn">{sourceLabel}</span> : null}
-        <span className={`chip ${connection === "open" ? "good" : "warn"}`}>
+        <span className={`chip ${connection === "open" ? "good" : "warn"}`} aria-live="polite">
           <span className="dot" />
           {CONNECTION_TEXT[connection]}
         </span>

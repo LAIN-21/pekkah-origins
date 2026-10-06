@@ -20,12 +20,17 @@ export function connectFeed({ onMessage, onConnection }: FeedHandlers): () => vo
 
   const open = () => {
     onConnection("connecting");
-    socket = new WebSocket(url);
-    socket.onopen = () => {
+    const ws = new WebSocket(url);
+    socket = ws;
+    // Events from a socket that is no longer the current one are ignored.
+    const current = () => !stopped && socket === ws;
+    ws.onopen = () => {
+      if (!current()) return;
       delay = RECONNECT_INITIAL_MS;
       onConnection("open");
     };
-    socket.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (!current()) return;
       let raw: unknown;
       try {
         raw = JSON.parse(String(event.data));
@@ -37,19 +42,28 @@ export function connectFeed({ onMessage, onConnection }: FeedHandlers): () => vo
       if (parsed.success) onMessage(parsed.data);
       else console.warn("ui feed: dropped a message that doesn't match the protocol", parsed.error);
     };
-    socket.onclose = () => {
+    ws.onclose = () => {
+      if (!current()) return;
       onConnection("closed");
-      if (stopped) return;
       timer = setTimeout(open, delay);
       delay = Math.min(delay * 2, RECONNECT_MAX_MS);
     };
-    socket.onerror = () => socket?.close();
+    ws.onerror = () => ws.close();
   };
 
   open();
   return () => {
     stopped = true;
     clearTimeout(timer);
-    socket?.close();
+    // Detach first: a late close event must not report "closed" after cleanup
+    // (React's StrictMode runs this effect twice in dev).
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.close();
+      socket = null;
+    }
   };
 }

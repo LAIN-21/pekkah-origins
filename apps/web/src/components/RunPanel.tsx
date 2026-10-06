@@ -87,7 +87,9 @@ export function RunPanel({ demo, connection, onStart }: Props) {
       <p className="small run-status" aria-live="polite">
         {status}
       </p>
-      {message ? <p className="small bad">{message}</p> : null}
+      <p className="small bad" aria-live="polite">
+        {message ?? ""}
+      </p>
     </section>
   );
 }
