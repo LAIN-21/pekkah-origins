@@ -186,7 +186,11 @@ export interface PaymentHookHandlers {
   keyOf(request: HTTPRequestContext | undefined, txHash: string): string | null;
   onSettling?(info: PaymentHookInfo): void | Promise<void>;
   onSettled?(
-    info: PaymentHookInfo & { settle: SettleResponse; receipt: PaymentReceipt },
+    info: PaymentHookInfo & {
+      settle: SettleResponse;
+      receipt: PaymentReceipt;
+      paymentPayload: PaymentPayload;
+    },
   ): void | Promise<void>;
   /**
    * `errorReason` is the facilitator's code; `settlement_pending` means the transaction may
@@ -295,6 +299,7 @@ export function attachPaymentHooks(
         requirements,
         settle,
         receipt,
+        paymentPayload: clone(ctx.paymentPayload),
       });
     });
   });

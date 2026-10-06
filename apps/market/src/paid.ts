@@ -1,11 +1,15 @@
 import {
+  assertMasumiRoute,
   exactCardanoRoute,
+  masumiRoute,
   type PaymentOperations,
   paidRoute,
   txHashFromPaymentHeader,
 } from "@pekkah/payments";
+import { NETWORK, type TransferMethod } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
-import type { HTTPRequestContext, x402ResourceServer } from "@x402/core/server";
+import { masumiEscrowAddress } from "@x402/cardano";
+import type { HTTPRequestContext, RouteConfig, x402ResourceServer } from "@x402/core/server";
 import type express from "express";
 import type { RequestHandler } from "express";
 import { monotonicFactory } from "ulid";
@@ -19,19 +23,30 @@ import type { WorkerRegistry } from "./workers.js";
 const nextJobId = monotonicFactory();
 
 export const JOBS_PATTERN = "POST /api/jobs/:offerId";
-const JOBS_PATH = /^\/api\/jobs\/([^/]+)$/i;
+export const ESCROW_JOBS_PATTERN = "POST /api/escrow-jobs/:offerId";
+const JOBS_PATH = /^\/api\/(jobs|escrow-jobs)\/([^/]+)$/i;
 
-/** The offer a paid-job path names, as Express would decode the param. */
-export function offerIdFromPath(path: string): string | null {
-  const match = JOBS_PATH.exec(path);
-  if (!match?.[1]) return null;
+function decode(segment: string | undefined): string | null {
+  if (!segment) return null;
   try {
-    return decodeURIComponent(match[1]);
+    return decodeURIComponent(segment);
   } catch {
     return null;
   }
 }
 
+/** The offer a paid-job or escrow-job path names, as Express would decode the param. */
+export function offerIdFromPath(path: string): string | null {
+  return decode(JOBS_PATH.exec(path)?.[2]);
+}
+
+/** The offer an escrow-job path names: its escrow commits to that offer's request. */
+export function escrowOfferIdFromPath(path: string): string | null {
+  const match = JOBS_PATH.exec(path);
+  return match?.[1]?.toLowerCase() === "escrow-jobs" ? decode(match[2]) : null;
+}
+
+/** An offer can be bought once, through either route. */
 export const offerKey = (offerId: string) => `offer:${offerId}`;
 
 export interface PaidJobRouteOptions {
@@ -45,6 +60,11 @@ export interface PaidJobRouteOptions {
   log: Logger;
   /** Requests per minute per IP, unpaid and paid together (PLAN 5.4). */
   perMinute?: number;
+  /**
+   * Enables POST /api/escrow-jobs/:offerId (PR-10): the payment is locked in Masumi's escrow
+   * with the offer's worker as seller. Only that worker sells through escrow.
+   */
+  masumi?: { sellerAddress: string; asset: string; unpaidPerMinute?: number };
 }
 
 function headerTx(header: string | undefined): string | null {
@@ -56,10 +76,18 @@ function headerTx(header: string | undefined): string | null {
   }
 }
 
+/** Counts only requests without a payment: each unpaid escrow 402 signs a fresh seller quote. */
+function unpaidLimit(perMinute: number): RequestHandler {
+  const limit = rateLimit(perMinute);
+  return (req, res, next) => (req.header("payment-signature") ? next() : limit(req, res, next));
+}
+
 /**
  * POST /api/jobs/:offerId (PLAN 4.2): the 402 asks for the offer's price, payable to the
  * offer's worker; the handler runs the job between verify and settle, so x402 settles only
  * after delivery, and a failed job answers 502 so nothing is charged.
+ * POST /api/escrow-jobs/:offerId (PLAN 4.8): the same, but the payment is locked in Masumi's
+ * escrow, bound to the offer's request, with the worker as seller. Nothing is released.
  */
 export function registerPaidJobRoute(app: express.Express, o: PaidJobRouteOptions): void {
   const offerOf = (ctx: HTTPRequestContext): OfferRecord => {
@@ -68,69 +96,9 @@ export function registerPaidJobRoute(app: express.Express, o: PaidJobRouteOption
     if (!record) throw new Error("unknown offer");
     return record;
   };
-
-  const paid = paidRoute(
-    JOBS_PATTERN,
-    exactCardanoRoute({
-      payTo: (ctx) => offerOf(ctx).offer.payTo,
-      price: (ctx) => {
-        const { offer } = offerOf(ctx);
-        return { amount: offer.priceAtomic, asset: offer.asset };
-      },
-      description: "A compute job on the worker my agent accepted",
-      l1Confirmations: o.l1Confirmations,
-    }),
-    o.server,
-  );
-
-  // Before x402: the offer exists and is open, nobody else paid for it, its worker can run it.
-  // A request carrying the payment that already holds the offer (a resumed or replayed
-  // request) is always admitted.
-  const preCheck: RequestHandler = (req, res, next) => {
-    const offerId = req.params.offerId ?? "";
-    const record = o.offers.get(offerId);
-    if (!record) {
-      res.status(404).json({ error: "offer_not_found" });
-      return;
-    }
-    const header = req.header("payment-signature");
-    const txHash = headerTx(header);
-    const holder = o.operations.activeHolder(offerKey(offerId));
-    if (txHash && holder === txHash) return next();
-    if (record.state === "closed") {
-      res.status(410).json({ error: "offer_closed" });
-      return;
-    }
-    if (holder) {
-      res.status(409).json({ error: "offer_already_purchased" });
-      return;
-    }
-    if (!o.offers.isPayable(record)) {
-      res.status(410).json({ error: "offer_expired" });
-      return;
-    }
-    if (!o.registry.isAvailable(record.offer.workerId)) {
-      res.status(409).json({ error: "worker_unavailable" });
-      return;
-    }
-    if (!header && record.state === "open") {
-      o.offers.markRequired(offerId);
-      const runId = record.runId ?? runIdOf(req);
-      o.bus.emit({
-        source: "market",
-        type: "payment.required",
-        ...(runId ? { runId } : {}),
-        data: {
-          offerId,
-          workerId: record.offer.workerId,
-          payTo: record.offer.payTo,
-          amountAtomic: record.offer.priceAtomic,
-          asset: record.offer.asset,
-          transferMethod: "default",
-        },
-      });
-    }
-    next();
+  const priceOf = (ctx: HTTPRequestContext) => {
+    const { offer } = offerOf(ctx);
+    return { amount: offer.priceAtomic, asset: offer.asset };
   };
 
   const startJob = (record: OfferRecord, txHash: string, runId: string | undefined): PaidJob => {
@@ -191,51 +159,147 @@ export function registerPaidJobRoute(app: express.Express, o: PaidJobRouteOption
     return job;
   };
 
-  app.post("/api/jobs/:offerId", rateLimit(o.perMinute ?? 10), preCheck, paid, async (req, res) => {
-    try {
-      const record = o.offers.get(req.params.offerId ?? "");
-      const txHash = headerTx(req.header("payment-signature"));
-      // Defence in depth: only a payment every verify hook accepted gets here.
-      if (!record || !txHash || !o.operations.isVerified(txHash)) {
-        res.status(402).json({ error: "payment_required" });
+  const register = (
+    method: TransferMethod,
+    path: string,
+    pattern: string,
+    route: RouteConfig,
+    extra: RequestHandler[],
+  ) => {
+    // Where the money goes: the worker, or the escrow with the worker as seller.
+    const payToOf = (record: OfferRecord) =>
+      method === "masumi" ? masumiEscrowAddress(NETWORK) : record.offer.payTo;
+
+    // Before x402: the offer exists and is open, nobody else paid for it, its worker can run
+    // it. A request carrying the payment that already holds the offer (a resumed or replayed
+    // request) is always admitted.
+    const preCheck: RequestHandler = (req, res, next) => {
+      const offerId = req.params.offerId ?? "";
+      const record = o.offers.get(offerId);
+      if (!record) {
+        res.status(404).json({ error: "offer_not_found" });
         return;
       }
-      const runId = record.runId ?? runIdOf(req);
-      if (o.operations.firstTime(txHash, "verified")) {
+      const header = req.header("payment-signature");
+      const txHash = headerTx(header);
+      const holder = o.operations.activeHolder(offerKey(offerId));
+      if (txHash && holder === txHash) return next();
+      if (method === "masumi" && record.offer.payTo !== o.masumi?.sellerAddress) {
+        res.status(409).json({ error: "not_a_masumi_seller" });
+        return;
+      }
+      if (record.state === "closed") {
+        res.status(410).json({ error: "offer_closed" });
+        return;
+      }
+      if (holder) {
+        res.status(409).json({ error: "offer_already_purchased" });
+        return;
+      }
+      if (!o.offers.isPayable(record)) {
+        res.status(410).json({ error: "offer_expired" });
+        return;
+      }
+      if (!o.registry.isAvailable(record.offer.workerId)) {
+        res.status(409).json({ error: "worker_unavailable" });
+        return;
+      }
+      if (!header && record.state === "open") {
+        o.offers.markRequired(offerId);
+        const runId = record.runId ?? runIdOf(req);
         o.bus.emit({
           source: "market",
-          type: "payment.verified",
+          type: "payment.required",
           ...(runId ? { runId } : {}),
           data: {
-            txHash,
-            offerId: record.offer.offerId,
+            offerId,
             workerId: record.offer.workerId,
-            payTo: record.offer.payTo,
+            payTo: payToOf(record),
             amountAtomic: record.offer.priceAtomic,
-            transferMethod: "default",
+            asset: record.offer.asset,
+            transferMethod: method,
           },
         });
       }
-      // One job per payment: a resumed or replayed request awaits or returns the same job.
-      // If that job was already trimmed from memory, refuse rather than run a second one.
-      const existing = o.jobs.byTxHash(txHash);
-      const startedBefore = (o.operations.get(txHash)?.data as { jobId?: string } | undefined)
-        ?.jobId;
-      if (!existing && startedBefore) {
-        res.status(410).json({ error: "job_expired" });
-        return;
+      next();
+    };
+
+    const paid = paidRoute(pattern, route, o.server);
+
+    app.post(path, rateLimit(o.perMinute ?? 10), ...extra, preCheck, paid, async (req, res) => {
+      try {
+        const record = o.offers.get(req.params.offerId ?? "");
+        const txHash = headerTx(req.header("payment-signature"));
+        // Defence in depth: only a payment every verify hook accepted gets here.
+        if (!record || !txHash || !o.operations.isVerified(txHash)) {
+          res.status(402).json({ error: "payment_required" });
+          return;
+        }
+        const runId = record.runId ?? runIdOf(req);
+        if (o.operations.firstTime(txHash, "verified")) {
+          o.bus.emit({
+            source: "market",
+            type: "payment.verified",
+            ...(runId ? { runId } : {}),
+            data: {
+              txHash,
+              offerId: record.offer.offerId,
+              workerId: record.offer.workerId,
+              payTo: payToOf(record),
+              amountAtomic: record.offer.priceAtomic,
+              transferMethod: method,
+            },
+          });
+        }
+        // One job per payment: a resumed or replayed request awaits or returns the same job.
+        // If that job was already trimmed from memory, refuse rather than run a second one.
+        const existing = o.jobs.byTxHash(txHash);
+        const startedBefore = (o.operations.get(txHash)?.data as { jobId?: string } | undefined)
+          ?.jobId;
+        if (!existing && startedBefore) {
+          res.status(410).json({ error: "job_expired" });
+          return;
+        }
+        const job = existing ?? startJob(record, txHash, runId);
+        await job.done;
+        if (job.status === "delivered") {
+          res.json(resultBody(job));
+          return;
+        }
+        res.status(502).json({ error: "job_failed", reason: job.error ?? "the job failed" });
+      } catch (err) {
+        o.log.error({ err }, "paid job handler failed");
+        if (!res.headersSent) res.status(500).json({ error: "internal" });
+        else res.end();
       }
-      const job = existing ?? startJob(record, txHash, runId);
-      await job.done;
-      if (job.status === "delivered") {
-        res.json(resultBody(job));
-        return;
-      }
-      res.status(502).json({ error: "job_failed", reason: job.error ?? "the job failed" });
-    } catch (err) {
-      o.log.error({ err }, "paid job handler failed");
-      if (!res.headersSent) res.status(500).json({ error: "internal" });
-      else res.end();
-    }
-  });
+    });
+  };
+
+  // Registered directly on app, with the payment gate in each route's own chain (fact 11).
+  register(
+    "default",
+    "/api/jobs/:offerId",
+    JOBS_PATTERN,
+    exactCardanoRoute({
+      payTo: (ctx) => offerOf(ctx).offer.payTo,
+      price: priceOf,
+      description: "A compute job on the worker my agent accepted",
+      l1Confirmations: o.l1Confirmations,
+    }),
+    [],
+  );
+
+  if (o.masumi) {
+    const route = masumiRoute({
+      price: priceOf,
+      description:
+        "A compute job; the payment is locked in Masumi escrow with the worker as seller",
+      l1Confirmations: o.l1Confirmations,
+    });
+    // The library checks a template only per request; refuse to boot with a bad one.
+    assertMasumiRoute(route, { amount: "50000", asset: o.masumi.asset });
+    register("masumi", "/api/escrow-jobs/:offerId", ESCROW_JOBS_PATTERN, route, [
+      unpaidLimit(o.masumi.unpaidPerMinute ?? 6),
+    ]);
+  }
 }
