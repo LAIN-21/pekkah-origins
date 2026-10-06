@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
   HEARTBEAT_BUSY_MS,
   HEARTBEAT_MS,
-  type HelloMsg,
   type JobDispatchMsg,
   MarketToWorker,
   RECONNECT_INITIAL_MS,
@@ -14,14 +13,26 @@ import {
 } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
 import WebSocket from "ws";
+import { boundHello, type HelloFields } from "./hello.js";
 import type { Workload } from "./workloads/index.js";
+
+/** Refusals that a reconnect can't fix: the worker stops instead of retrying forever. */
+export const FATAL_REFUSALS = new Set(["unauthorized", "invalid_hello"]);
+
+export interface Refusal {
+  code: string;
+  message: string;
+}
 
 export interface WorkerAgentOptions {
   url: string;
-  hello: Omit<HelloMsg, "type" | "warm">;
+  /** Built again before every connect, so the hardware report is fresh each time. */
+  hello: () => Promise<HelloFields>;
   workloads: Workload[];
   sampleUtil: () => Promise<WorkerUtil>;
   log: Logger;
+  /** Called once when the market refuses this worker for good. The agent has stopped by then. */
+  onRefused?: (refusal: Refusal) => void;
 }
 
 /** The worker side of /ws/worker (PLAN 5.3): it dials out, so it needs no inbound port. */
@@ -38,7 +49,7 @@ export class WorkerAgent {
   constructor(private readonly o: WorkerAgentOptions) {}
 
   start(): void {
-    void this.refreshWarm().finally(() => this.connect());
+    void this.refreshWarm().finally(() => void this.connect());
     this.warmTimer = setInterval(() => void this.refreshWarm(), 5_000);
   }
 
@@ -51,7 +62,22 @@ export class WorkerAgent {
     this.socket?.close(1001, "worker stopping");
   }
 
-  private connect(): void {
+  private retry(): void {
+    if (this.stopped) return;
+    const delay = this.backoff;
+    this.backoff = Math.min(this.backoff * 2, RECONNECT_MAX_MS);
+    this.reconnectTimer = setTimeout(() => void this.connect(), delay);
+  }
+
+  private async connect(): Promise<void> {
+    if (this.stopped) return;
+    let hello: HelloFields;
+    try {
+      hello = boundHello(await this.o.hello());
+    } catch (err) {
+      this.o.log.error({ err: err instanceof Error ? err.message : String(err) }, "no hello");
+      return this.retry();
+    }
     if (this.stopped) return;
     const ws = new WebSocket(this.o.url, {
       maxPayload: WS_MAX_PAYLOAD_BYTES,
@@ -61,7 +87,7 @@ export class WorkerAgent {
     ws.on("open", () => {
       this.backoff = RECONNECT_INITIAL_MS;
       this.o.log.info({ url: this.o.url, warm: this.warm }, "connected to the market");
-      this.send({ type: "hello", ...this.o.hello, warm: this.warm });
+      this.send({ type: "hello", ...hello, warm: this.warm });
       this.scheduleHeartbeat();
     });
     ws.on("message", (data) => this.onMessage(data.toString()));
@@ -71,12 +97,20 @@ export class WorkerAgent {
       clearTimeout(this.heartbeatTimer);
       // Nobody can receive this job's result any more; the market fails it on its side.
       this.job?.abort.abort("market connection lost");
+      const why = reason.toString();
+      // The market sends an error message, then closes with its code as the reason.
+      if (code === 1008 && FATAL_REFUSALS.has(why)) this.refused({ code: why, message: why });
       if (this.stopped) return;
-      const delay = this.backoff;
-      this.backoff = Math.min(this.backoff * 2, RECONNECT_MAX_MS);
-      this.o.log.warn({ code, reason: reason.toString(), retryInMs: delay }, "disconnected");
-      this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      this.o.log.warn({ code, reason: why, retryInMs: this.backoff }, "disconnected");
+      this.retry();
     });
+  }
+
+  private refused(refusal: Refusal): void {
+    if (this.stopped) return;
+    this.o.log.error(refusal, "the market refused this worker; not reconnecting");
+    this.stop();
+    this.o.onRefused?.(refusal);
   }
 
   private send(msg: WorkerToMarket): boolean {
@@ -148,7 +182,8 @@ export class WorkerAgent {
         if (this.job?.jobId === msg.jobId) this.job.abort.abort(msg.reason);
         break;
       case "error":
-        this.o.log.error({ code: msg.code, message: msg.message }, "the market refused me");
+        if (FATAL_REFUSALS.has(msg.code)) this.refused({ code: msg.code, message: msg.message });
+        else this.o.log.error({ code: msg.code, message: msg.message }, "the market refused me");
         break;
     }
   }
