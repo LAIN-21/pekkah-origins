@@ -1,5 +1,6 @@
 import {
   type AgentEventType,
+  type AgentReportedChainType,
   type ComputeRequest,
   type EventData,
   Quote,
@@ -54,6 +55,32 @@ export class MarketClient {
       if (!res.ok) this.warn(`agent event ${type} refused: HTTP ${res.status}`);
     } catch (err) {
       this.warn(`agent event ${type} not delivered: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * Reports a chain event my agent caused (PR-16b: a refund). The market checks it on chain
+   * and adds it to the lock's run. Unlike `event`, the caller learns whether it was taken.
+   */
+  async report<T extends AgentReportedChainType>(
+    type: T,
+    data: EventData<T>,
+  ): Promise<{ ok: true } | { ok: false; why: string }> {
+    if (!this.agentToken) return { ok: false, why: "no AGENT_TOKEN to report with" };
+    try {
+      const res = await fetch(`${this.url}/api/agent-events`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.agentToken}`,
+        },
+        body: JSON.stringify({ events: [{ type, data }] }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (res.ok) return { ok: true };
+      return { ok: false, why: `the market refused it: HTTP ${res.status} ${await res.text()}` };
+    } catch (err) {
+      return { ok: false, why: `not delivered: ${err instanceof Error ? err.message : err}` };
     }
   }
 }

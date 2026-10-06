@@ -1,7 +1,13 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { masumiSeller } from "@pekkah/payments";
-import { AssetId, CardanoAddress, DEFAULT_ASSET, PEKKAH_VERSION } from "@pekkah/protocol";
+import {
+  AssetId,
+  CardanoAddress,
+  DEFAULT_ASSET,
+  explorerTxUrl,
+  PEKKAH_VERSION,
+} from "@pekkah/protocol";
 import { assertMnemonic, createLogger, envFlag, envPort, gitSha, readEnv } from "@pekkah/runtime";
 import { z } from "zod";
 import { createApp } from "./app.js";
@@ -15,7 +21,7 @@ import {
   registerSmokeRoute,
 } from "./dev.js";
 import { escrowCommitment } from "./escrow.js";
-import { createEscrowReleaser } from "./escrow-release.js";
+import { chainTxUtxos, checkRefund, createEscrowReleaser } from "./escrow-release.js";
 import { registerEscrowReleaseRoute } from "./escrow-release-route.js";
 import { EventBus } from "./events.js";
 import { JobStore } from "./jobs.js";
@@ -25,7 +31,7 @@ import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
 import { pendingReleases, ReleaseScheduler } from "./release-scheduler.js";
 import { createResultSubmitter, tryCreateSellerChain } from "./result-submit.js";
-import { registerAgentEvents, registerReadRoutes } from "./routes.js";
+import { type ReportedChainEvents, registerAgentEvents, registerReadRoutes } from "./routes.js";
 import { RunStore } from "./runs.js";
 import { UiHub } from "./ui.js";
 import { parseWorkerTokens, WorkerRegistry } from "./workers.js";
@@ -126,6 +132,34 @@ if (releases) {
   for (const pending of pendingReleases(runs.all())) releases.add(pending);
   bus.subscribe((event) => releases.observe(event));
 }
+// PR-16b: my agent reports the refunds it sends; the market checks each on chain first.
+const reported: ReportedChainEvents | undefined = sellerChain
+  ? {
+      refunded: async (report) => {
+        const lock = runs.findLock(report.lockTxHash);
+        if (lock?.refundedTxHash === report.txHash) return { ok: true, event: null };
+        const checked = await checkRefund(
+          chainTxUtxos(sellerChain.chainUrl),
+          {
+            txHash: report.lockTxHash,
+            ...(lock?.outputIndex !== undefined ? { outputIndex: lock.outputIndex } : {}),
+          },
+          report.txHash,
+        );
+        if (!checked.ok) return checked;
+        return {
+          ok: true,
+          event: {
+            source: "chain",
+            type: "escrow.refunded",
+            ...(lock ? { runId: lock.runId } : {}),
+            ...(lock?.jobId ? { jobId: lock.jobId } : {}),
+            data: { ...checked.refund, explorerUrl: explorerTxUrl(report.txHash) },
+          },
+        };
+      },
+    }
+  : undefined;
 const payments = createMarketPayments(
   {
     facilitatorUrl: env.FACILITATOR_URL,
@@ -196,7 +230,7 @@ const app = createApp({
         : {}),
     });
     registerReadRoutes(app, { jobs, runs, facilitatorUrl: env.FACILITATOR_URL, log });
-    registerAgentEvents(app, bearerGuard(env.AGENT_TOKEN), bus);
+    registerAgentEvents(app, bearerGuard(env.AGENT_TOKEN), bus, reported);
     registerDemoRoute(app, demo, env.DEMO_TOKEN);
     if (releases && release && env.DEMO_TOKEN) {
       registerEscrowReleaseRoute(app, bearerGuard(env.DEMO_TOKEN), {

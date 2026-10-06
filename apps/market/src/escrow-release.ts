@@ -395,3 +395,74 @@ export function createEscrowReleaser(o: { chain: SellerChain; now?: () => number
 }
 
 export type EscrowReleaser = ReturnType<typeof createEscrowReleaser>;
+
+/** The facilitator's chain passthrough: one transaction's outputs, or null if not on chain. */
+export function chainTxUtxos(chainUrl: string) {
+  const base = chainUrl.replace(/\/+$/, "");
+  return async (txHash: string): Promise<ChainTxUtxos | null> => {
+    const res = await fetch(`${base}/txs/${txHash}/utxos`, { signal: AbortSignal.timeout(20_000) });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`the chain answered ${res.status}`);
+    return (await res.json()) as ChainTxUtxos;
+  };
+}
+
+export interface CheckedRefund {
+  lockTxHash: string;
+  txHash: string;
+  buyerAddress: string;
+  amountAtomic: string;
+  asset: string;
+  collateralReturnLovelace: string;
+}
+
+/**
+ * PR-16b: whether `txHash` refunded the lock: it closed the escrow, and one of its outputs
+ * gave the buyer all of the escrow's lovelace and its token. Every value comes from the chain,
+ * never from the report.
+ */
+export async function checkRefund(
+  txUtxos: (txHash: string) => Promise<ChainTxUtxos | null>,
+  lock: { txHash: string; outputIndex?: number },
+  txHash: string,
+): Promise<{ ok: true; refund: CheckedRefund } | { ok: false; reason: string }> {
+  const where = await locateEscrow(txUtxos, lock.txHash, lock.outputIndex);
+  if (where.kind !== "closed") {
+    return {
+      ok: false,
+      reason: where.kind === "open" ? "the escrow is still open" : where.reason,
+    };
+  }
+  if (where.spentBy !== txHash) {
+    return { ok: false, reason: `the escrow was closed by ${where.spentBy}, not ${txHash}` };
+  }
+  const view = where.last.inline_datum ? parseMasumiLockDatum(where.last.inline_datum) : null;
+  const token = where.last.amount.find((a) => a.unit !== "lovelace");
+  const lovelace = where.last.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0";
+  const tx = await txUtxos(txHash);
+  if (!view || !token || !tx)
+    return { ok: false, reason: "the escrow or the refund is unreadable" };
+  const buyerAddress = Address.toBech32(
+    addressFromCredentials(view.buyerReturnAddress ?? view.buyer),
+  );
+  const everything = tx.outputs.some(
+    (out) =>
+      out.address === buyerAddress &&
+      where.last.amount.every(
+        (a) =>
+          BigInt(out.amount.find((b) => b.unit === a.unit)?.quantity ?? "0") >= BigInt(a.quantity),
+      ),
+  );
+  if (!everything) return { ok: false, reason: "the buyer did not get all of the escrow back" };
+  return {
+    ok: true,
+    refund: {
+      lockTxHash: lock.txHash,
+      txHash,
+      buyerAddress,
+      amountAtomic: token.quantity,
+      asset: assetId(token.unit),
+      collateralReturnLovelace: lovelace,
+    },
+  };
+}

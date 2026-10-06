@@ -15,11 +15,12 @@ import {
   RUN_ID_HEADER,
   ScenarioName,
 } from "@pekkah/protocol";
-import { createLogger, envPort, gitSha, readEnv } from "@pekkah/runtime";
+import { assertMnemonic, createLogger, envPort, gitSha, readEnv } from "@pekkah/runtime";
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { monotonicFactory } from "ulid";
 import { z } from "zod";
 import { MarketClient } from "./market.js";
+import { buyerClient, type ChainOutput, parseLockRef, refund } from "./refund.js";
 import { runScenario, type SavedPayment } from "./run.js";
 
 const usd = z.coerce.number().positive();
@@ -145,7 +146,11 @@ function connect(marketUrl: string) {
 async function cli(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { market: { type: "string" }, prompt: { type: "string" } },
+    options: {
+      market: { type: "string" },
+      prompt: { type: "string" },
+      "dry-run": { type: "boolean", default: false },
+    },
     allowPositionals: true,
   });
   const [command, name] = positionals;
@@ -201,9 +206,99 @@ async function cli(argv: string[]): Promise<number> {
     return res.ok && settle?.transaction === saved.txHash ? 0 : 1;
   }
 
+  if (command === "refund") {
+    return refundCommand(name ?? "", marketUrl, values["dry-run"] === true);
+  }
+
   console.log(`Pekkah agent ${PEKKAH_VERSION}`);
-  console.log("usage: agent run <scenario> [--market <url>] [--prompt <0-4>] | agent replay-last");
+  console.log(
+    "usage: agent run <scenario> [--market <url>] [--prompt <0-4>] | agent replay-last | agent refund <lockTxHash>#<index> [--dry-run]",
+  );
   return command ? 2 : 0;
+}
+
+/** Blockfrost reads for the refund: the buyer may call Blockfrost, 5 s apart when polling. */
+function blockfrost() {
+  const get = (path: string) =>
+    fetch(`${env.BLOCKFROST_BASE_URL.replace(/\/+$/, "")}${path}`, {
+      headers: { project_id: env.BLOCKFROST_PROJECT_ID },
+      signal: AbortSignal.timeout(20_000),
+    });
+  return {
+    txUtxos: async (txHash: string) => {
+      const res = await get(`/txs/${txHash}/utxos`);
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`Blockfrost answered ${res.status}`);
+      return (await res.json()) as { outputs: ChainOutput[] };
+    },
+    waitForTx: async (txHash: string) => {
+      for (let i = 0; i < 36; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        if ((await get(`/txs/${txHash}`).catch(() => null))?.ok) return true;
+      }
+      return false;
+    },
+  };
+}
+
+/**
+ * PR-16b: `agent refund <lockTxHash>#<index> [--dry-run]`. Takes back a lock with no result,
+ * as the buyer, then reports it to the market, which checks it on chain. Run again, it reports
+ * a refund already on chain instead of sending another. Exit 3: refunded, not yet reported.
+ */
+async function refundCommand(arg: string, marketUrl: string, dryRun: boolean): Promise<number> {
+  const lock = parseLockRef(arg);
+  if (!lock) {
+    console.error("usage: agent refund <lockTxHash>#<index> [--dry-run] [--market <url>]");
+    return 2;
+  }
+  const chain = blockfrost();
+  const client = buyerClient({
+    baseUrl: env.BLOCKFROST_BASE_URL,
+    projectId: env.BLOCKFROST_PROJECT_ID,
+    mnemonic: assertMnemonic("BUYER_MNEMONIC", env.BUYER_MNEMONIC),
+    accountIndex: env.BUYER_ACCOUNT_INDEX,
+  });
+  console.log(`lock       ${explorerTxUrl(lock.txHash)} output ${lock.outputIndex}`);
+  const outcome = await refund(
+    lock,
+    { client, ...chain, now: Date.now, log: (line) => console.log(line) },
+    dryRun,
+  ).catch((err: unknown) => ({
+    ok: false as const,
+    reason: err instanceof Error ? err.message : String(err),
+  }));
+  if (!outcome.ok) {
+    console.error(`refund     not sent: ${outcome.reason}`);
+    return 1;
+  }
+  const { report } = outcome;
+  if (outcome.feeLovelace) {
+    console.log(
+      `evaluated  fee ${outcome.feeLovelace} lovelace, ${JSON.stringify(outcome.exUnits)}`,
+    );
+  }
+  if (dryRun) {
+    console.log("dry run    built and evaluated; nothing was signed");
+    return 0;
+  }
+  if (outcome.alreadyRefunded) {
+    console.log(`refunded   already, in ${report.explorerUrl}`);
+  } else {
+    console.log(`refund     ${report.explorerUrl}`);
+    if (!(await chain.waitForTx(report.txHash))) {
+      console.error("refund     submitted, not seen on chain in 3 minutes; run again to report it");
+      return 3;
+    }
+  }
+  console.log(
+    `back       ${report.amountAtomic} atomic of ${report.asset} and ${report.collateralReturnLovelace} lovelace to ${report.buyerAddress}`,
+  );
+  const reported = await new MarketClient(marketUrl, env.AGENT_TOKEN, (line) =>
+    log.warn(line),
+  ).report("escrow.refunded", report);
+  console.log(`reported   ${reported.ok ? "the market checked it and recorded it" : reported.why}`);
+  return reported.ok ? 0 : 3;
 }
 
 if (env.AGENT_MODE === "service") {
