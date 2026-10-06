@@ -1,4 +1,5 @@
 // pnpm exec tsx scripts/demo-run.ts <scenario> [--runs N] [--prompt 0-4]
+// pnpm exec tsx scripts/demo-run.ts --run-id <id> [--run-id <id>…]   (report only, pays nothing)
 // Real paid runs on the deployed market, started through its own run route
 // (POST /api/demo/run with DEMO_TOKEN). They go through the hosted agent and its
 // one-run-at-a-time lock, so they never overlap another paid run on the same
@@ -22,11 +23,18 @@ import { loadLocalEnv } from "../packages/runtime/src/index.js";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
-  options: { runs: { type: "string", default: "1" }, prompt: { type: "string" } },
+  options: {
+    runs: { type: "string", default: "1" },
+    prompt: { type: "string" },
+    "run-id": { type: "string", multiple: true },
+  },
 });
-const scenario = ScenarioName.safeParse(positionals[0]);
-if (!scenario.success) {
-  console.error(`usage: demo-run.ts <${ScenarioName.options.join("|")}> [--runs N] [--prompt 0-4]`);
+const existing = values["run-id"] ?? [];
+const scenario = ScenarioName.safeParse(positionals[0] ?? "gpu-image");
+if (!scenario.success || (existing.length === 0 && positionals.length === 0)) {
+  console.error(
+    `usage: demo-run.ts <${ScenarioName.options.join("|")}> [--runs N] [--prompt 0-4] | --run-id <id>…`,
+  );
   process.exit(2);
 }
 process.env.PEKKAH_ENV_FILE ||= join(homedir(), ".pekkah", "env", "market.env");
@@ -101,13 +109,8 @@ async function onChain(txHash: string): Promise<TxStatus | null> {
   return null;
 }
 
-mkdirSync(out, { recursive: true });
-let failures = 0;
-for (let n = 1; n <= Number(values.runs); n++) {
-  const started = Date.now();
-  const runId = await start();
-  console.log(`run ${n}: ${scenario.data}, runId ${runId}`);
-  const events = await follow(runId);
+/** Prints a finished run's evidence; returns false when it didn't settle. */
+async function report(runId: string, events: JobEvent[]): Promise<boolean> {
   const failed = find(events, "run.failed")[0];
   const decision = find(events, "agent.decision").at(-1);
   const verified = find(events, "payment.verified").at(-1);
@@ -123,9 +126,8 @@ for (let n = 1; n <= Number(values.runs); n++) {
     console.log(`  cancelled: ${c.data.reason} (nothing charged for ${c.data.txHash ?? "-"})`);
   }
   if (failed || !settled || !receipt) {
-    failures += 1;
     console.log(`  FAILED: ${failed?.data.reason ?? "no settlement or receipt in the events"}`);
-    continue;
+    return false;
   }
   const r = receipt.data.receipt;
   console.log(
@@ -150,6 +152,25 @@ for (let n = 1; n <= Number(values.runs); n++) {
       console.log(`  result: ${res.status} from ${receipt.data.resultUrl}`);
     }
   }
-  console.log(`  run took ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  const total = find(events, "run.completed")[0]?.data.totalMs;
+  if (total !== undefined) console.log(`  run took ${(total / 1000).toFixed(1)} s (agent's total)`);
+  return true;
+}
+
+mkdirSync(out, { recursive: true });
+let failures = 0;
+if (existing.length > 0) {
+  for (const runId of existing) {
+    const events = await follow(runId);
+    const scenarioName = find(events, "run.started")[0]?.data.scenario ?? "?";
+    console.log(`run ${runId}: ${scenarioName}`);
+    if (!(await report(runId, events))) failures += 1;
+  }
+} else {
+  for (let n = 1; n <= Number(values.runs); n++) {
+    const runId = await start();
+    console.log(`run ${n}: ${scenario.data}, runId ${runId}`);
+    if (!(await report(runId, await follow(runId)))) failures += 1;
+  }
 }
 process.exit(failures ? 1 : 0);
