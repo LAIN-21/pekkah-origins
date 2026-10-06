@@ -1,0 +1,21 @@
+# Override for worker A only (the `pekkah` GPU droplet):
+#   -f deploy/worker.compose.yml -f deploy/worker.gpu.yml
+# Gives the worker the GPU (nvidia-smi for hardware and utilisation) and puts it
+# on pekkah-jobs, the internal network it shares with the warm flux server.
+
+services:
+  worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - default
+      - pekkah-jobs
+
+networks:
+  pekkah-jobs:
+    external: true

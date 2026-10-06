@@ -1,0 +1,10 @@
+# Compose project pekkah-flux, on the GPU droplet only. It is separate from
+# pekkah-worker, so a worker redeploy never removes the warm flux server.
+# pekkah-jobs is an internal network (no internet) created once by deploy.sh.
+# Stub: PR-07a adds the flux and flux-fetch services.
+
+services: {}
+
+networks:
+  pekkah-jobs:
+    external: true

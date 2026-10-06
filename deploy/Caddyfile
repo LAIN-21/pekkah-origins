@@ -1,0 +1,4 @@
+# PUBLIC_HOST is <ip-with-dashes>.sslip.io (automatic HTTPS) or http://<ip> (plain HTTP).
+{$PUBLIC_HOST} {
+	reverse_proxy market:8080
+}
