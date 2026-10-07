@@ -78,12 +78,12 @@ Workers need no inbound port: they dial out to the market. Each CPU job runs in 
 
 1. **Quote.** My agent sends a compute request: the workload, a deadline and a budget. The market answers with offers from the workers it has measured, or with the market price and a counter-offer when nothing fits, plus a reason for every worker it rejected.
 2. **Decide.** The agent accepts an offer within its private ceiling, or declines. No human step.
-3. **402.** The agent asks for the job. The market answers `402 Payment Required`: pay this worker's address this price, in tUSDM.
+3. **402.** The agent asks for the job. The market answers `402 Payment Required`: pay this worker's address this price, in tUSDM. (On the escrow route, the 402 asks it to pay Masumi's escrow address instead, and names the worker as the seller: see below.)
 4. **Sign.** The agent checks that the 402 asks for exactly the offer it accepted and that its spend caps allow it. It then signs a Cardano transaction and sends it with the request.
 5. **Run.** The facilitator verifies the signed transaction. The market dispatches the job to that worker and waits for the result.
 6. **Settle.** Only after the result arrives does the facilitator broadcast the transaction and wait for it on chain. The agent gets the result and a receipt with a Cardanoscan link. If the job fails, the market's settlement never broadcasts the transaction, so nothing is charged. The market does hold the signed transaction until its TTL, so this relies on an honest market (see the honest limits); escrow removes that trust.
 
-With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Then:
+With the escrow route, the 402's `payTo` is Masumi's `vested_pay` escrow address, not the worker's, and the seller-signed terms name worker A as the seller. Step 6 locks the payment in that contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Then:
 - **Result.** The market records the delivered result's hash in the escrow as worker A (Masumi's `SubmitResult`, signed with Seller A's key). The funds stay locked.
 - **Release.** After the unlock time, about 31 minutes after the 402, the market releases the escrow as worker A (Masumi's `Withdraw`). The tUSDM goes to worker A and the buyer's collateral comes back, in one transaction.
 - **Refund.** If no result is submitted by the submit-result deadline, my agent takes the lock back (Masumi's `WithdrawRefund`, `pnpm agent refund <lockTx>#<index>`): the price and the collateral go back to the buyer. The market records the refund only after it finds it on chain.
