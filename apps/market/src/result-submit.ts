@@ -40,12 +40,32 @@ const F = {
 /** How long a submit-result transaction may wait to land. */
 const VALID_FOR_MS = 180_000;
 /**
- * Collateral is a pure-ADA wallet UTxO of at least this much, used whole: a token-carrying
- * collateral would need a return output with its own minimum ADA. It covers 150% of this
- * transaction's fee (well under 1 tADA) with room. Only a failed script takes it, and
- * evaluation rules that out before any submit.
+ * Collateral comes from a pure-ADA wallet UTxO of at least this much: a token-carrying one
+ * would need its tokens returned too. It covers 150% of a script transaction's fee (well
+ * under 1 tADA) with room. Only a failed script takes it, and evaluation rules that out
+ * before any submit.
  */
 const MIN_COLLATERAL = 2_000_000n;
+/**
+ * The most a script transaction puts up. The SDK takes the reserve and sends the rest back
+ * in a collateral-return output, so even a failed script costs at most this, however large
+ * the reserve is (a funding can make it thousands of tADA).
+ */
+export const MAX_COLLATERAL = 5_000_000n;
+/**
+ * The least a collateral return may hold: above a pure-ADA output's minimum (about 1 tADA).
+ * The SDK refuses to build when the return falls below that minimum.
+ */
+const MIN_RETURN = 1_500_000n;
+
+/**
+ * How much of a reserve to put up: all of it up to 5 tADA; above that, 5 tADA, unless the
+ * return would fall under its minimum, then the reserve less that minimum (still over 3.5 tADA).
+ */
+export function collateralFor(lovelace: bigint): bigint {
+  if (lovelace <= MAX_COLLATERAL) return lovelace;
+  return lovelace - MAX_COLLATERAL >= MIN_RETURN ? MAX_COLLATERAL : lovelace - MIN_RETURN;
+}
 
 /**
  * The escrow datum after SubmitResult, from the locked one: the result hash set, the state
@@ -124,12 +144,16 @@ const sameRef = (a: UTxO.UTxO, b: UTxO.UTxO) =>
 
 /**
  * The collateral reserve: the largest pure-ADA wallet UTxO, which must hold at least 2 tADA.
- * Fees and min-ADA come from the other UTxOs (`isNot` filters it out of coin selection), so the
- * reserve survives for the next script transaction.
+ * The SDK picks the same one for collateral (pure ADA first, largest first). `collateral` is
+ * the amount to put up: the whole reserve up to 5 tADA, never more. Fees and min-ADA come
+ * from the other UTxOs (`isNot` filters the reserve out of coin selection), so it survives for
+ * the next script transaction.
  */
 export function collateralReserve(
   wallet: readonly UTxO.UTxO[],
-): { ok: true; utxo: UTxO.UTxO; isNot: (u: UTxO.UTxO) => boolean } | { ok: false; reason: string } {
+):
+  | { ok: true; utxo: UTxO.UTxO; collateral: bigint; isNot: (u: UTxO.UTxO) => boolean }
+  | { ok: false; reason: string } {
   const pure = wallet
     .filter((u) => !Assets.hasMultiAsset(u.assets) && u.scriptRef === undefined)
     .sort((a, b) => Number(Assets.lovelaceOf(b.assets) - Assets.lovelaceOf(a.assets)));
@@ -140,7 +164,13 @@ export function collateralReserve(
       reason: "Seller A needs a pure-ADA UTxO of at least 2 tADA for collateral",
     };
   }
-  return { ok: true, utxo: reserve, isNot: (u) => !sameRef(u, reserve) };
+  const lovelace = Assets.lovelaceOf(reserve.assets);
+  return {
+    ok: true,
+    utxo: reserve,
+    collateral: collateralFor(lovelace),
+    isNot: (u) => !sameRef(u, reserve),
+  };
 }
 
 /**
@@ -256,9 +286,8 @@ export function createResultSubmitter(o: ResultSubmitterOptions) {
       .setValidity({ from, to })
       .build({
         passAdditionalUtxos: input.dryRunUtxo !== undefined,
-        // Exactly the reserve's lovelace: the SDK takes the largest pure-ADA UTxO first, so the
-        // collateral is the reserve alone and needs no return output.
-        setCollateral: Assets.lovelaceOf(reserve.utxo.assets),
+        // At most 5 tADA of the reserve; the SDK returns the rest (collateralReserve).
+        setCollateral: reserve.collateral,
         coinSelection: (available, required) =>
           largestFirstSelection(available.filter(reserve.isNot), required),
       });

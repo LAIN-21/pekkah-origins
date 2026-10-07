@@ -1,14 +1,17 @@
-import { Data } from "@evolution-sdk/evolution";
+import { Address, Assets, Data, TransactionHash, UTxO } from "@evolution-sdk/evolution";
 import type { Logger } from "@pekkah/runtime";
 import { describe, expect, it } from "vitest";
 import { throwawayMnemonic } from "../../../packages/runtime/src/test-support/mnemonic.js";
 import {
+  collateralFor,
+  collateralReserve,
   createResultSubmitter,
   createSellerChain,
+  MAX_COLLATERAL,
   submittedDatum,
   tryCreateSellerChain,
 } from "./result-submit.js";
-import { LOCK_DATUM, RESULT } from "./test-support/escrow.js";
+import { LOCK_DATUM, RESULT, SELLER_A, TUSDM_UNIT } from "./test-support/escrow.js";
 
 describe("the datum after SubmitResult", () => {
   it("sets the result hash, state and cooldowns, and keeps every other field", () => {
@@ -92,5 +95,54 @@ describe("setting up Seller A's chain access", () => {
     await expect(a).rejects.toThrow("a");
     await expect(b).resolves.toBe("b");
     expect(order).toEqual(["a start", "a end", "b start", "b end"]);
+  });
+});
+
+describe("the collateral reserve", () => {
+  const utxo = (i: number, lovelace: bigint, token = false) =>
+    new UTxO.UTxO({
+      transactionId: TransactionHash.fromHex(i.toString(16).padStart(64, "0")),
+      index: 0n,
+      address: Address.fromBech32(SELLER_A),
+      assets: token
+        ? Assets.fromRecord({ lovelace, [TUSDM_UNIT]: 50_000n })
+        : Assets.fromLovelace(lovelace),
+    });
+
+  it("is the largest pure-ADA UTxO, and puts up at most 5 tADA of it", () => {
+    // A funding of 10,000 tADA must not become 10,000 tADA at stake.
+    const funding = utxo(1, 10_000_000_000n);
+    const small = utxo(2, 2_000_000n);
+    const reserve = collateralReserve([small, utxo(3, 50_000_000_000n, true), funding]);
+    expect(reserve).toMatchObject({ ok: true, collateral: MAX_COLLATERAL });
+    if (!reserve.ok) throw new Error("expected a reserve");
+    expect(reserve.utxo).toBe(funding);
+    expect(reserve.isNot(funding)).toBe(false);
+    expect(reserve.isNot(small)).toBe(true);
+    expect(MAX_COLLATERAL).toBe(5_000_000n);
+  });
+
+  it("puts up all of a small reserve", () => {
+    expect(collateralReserve([utxo(1, 2_000_000n)])).toMatchObject({
+      ok: true,
+      collateral: 2_000_000n,
+    });
+  });
+
+  it("leaves a collateral return above its minimum, just over 5 tADA too", () => {
+    expect(collateralFor(2_000_000n)).toBe(2_000_000n);
+    expect(collateralFor(5_000_000n)).toBe(5_000_000n);
+    // 5.1 tADA would leave a 0.1 tADA return, which the SDK refuses: put up 3.6 tADA instead.
+    expect(collateralFor(5_100_000n)).toBe(3_600_000n);
+    expect(collateralFor(6_499_999n)).toBe(4_999_999n);
+    expect(collateralFor(6_500_000n)).toBe(5_000_000n);
+    expect(collateralFor(10_000_000_000n)).toBe(5_000_000n);
+  });
+
+  it("needs a pure-ADA UTxO of at least 2 tADA", () => {
+    expect(collateralReserve([utxo(1, 1_999_999n), utxo(2, 9_000_000n, true)])).toEqual({
+      ok: false,
+      reason: "Seller A needs a pure-ADA UTxO of at least 2 tADA for collateral",
+    });
   });
 });
