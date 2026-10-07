@@ -94,6 +94,13 @@ Every escrow transaction is evaluated against the real validator before it is si
 
 The Pekkah MCP server gives Claude five tools: `pekkah_market`, `pekkah_quote`, `pekkah_buy`, `pekkah_result`, and the one-shot `pekkah_generate_image`. Quotes are free. When I give a budget and an offer fits it, Claude buys. When nothing fits, the buy tool refuses until Claude has asked me, so the ask happens even if the model skips its instructions. When I say yes, the market records my agent's statement that I approved. That is a statement, not proof: the wallet's spend caps stay the hard limit. Escrow is on by default for worker A, and the page follows Claude's run like any other, labelled "Claude via MCP". Setup for Claude Desktop and Claude Code is in [apps/mcp/README.md](apps/mcp/README.md).
 
+**From my recording**, on 7 October at 14:21 SGT ([open the run](https://146-190-188-100.sslip.io/?run=01M4AGC78QWE3M6K89ZT0NZYKC)):
+- I asked Claude for a vintage travel poster of a lighthouse at dusk, for at most 3 cents.
+- Two quotes found nothing within 3 cents: worker A sells images for $0.05, and B and C have no GPU.
+- Claude asked me, I said yes, and it bought A's offer through escrow. The market records its reason, "my human approved $0.05", as my agent's statement.
+- A made the 1024×1024 image in 6.8 s, and the market checked that it was a PNG of that size.
+- The payment was locked in escrow ([`59be4b5b…`](https://preprod.cardanoscan.io/transaction/59be4b5be5921afbe04973fc6fb9ef7b42e855df4f166f6690b9623490c8f612)), the result's hash went on chain ([`f47530f3…`](https://preprod.cardanoscan.io/transaction/f47530f39e79fa63a2e64c14e60b198b0b4d88a2819a02ba592b4e7731e4a3ba)), and 81 s after the unlock the market released it ([`35490803…`](https://preprod.cardanoscan.io/transaction/354908038698f919555d80ca507eb60f5a052e46d7cf5f83509e32c3af60ca24)): 0.05 tUSDM to worker A, and the 4.00399 tADA collateral back to the buyer. That was 33 minutes after the 402.
+
 ## Real runs
 
 Every run is a real transaction on Cardano preprod. `scripts/demo-check.sh` appends each passing run to [docs/RUNS.md](docs/RUNS.md).
@@ -108,6 +115,8 @@ Every run is a real transaction on Cardano preprod. `scripts/demo-check.sh` appe
 | 2026-10-06 16:30:10 | failover | B | $0.03 | [be12c2efd5…](https://preprod.cardanoscan.io/transaction/be12c2efd57677d5045c2d604359e6acca6a4b574f1f12afb4e02e1c6c2cf77e) | 6.6 s | `c1a15015c207fab78a7c2c9b6502680ef3aae7e672d0e368f0ea391048d735e7` |
 
 In each failover round, C's job was killed mid-run. Its payment was cancelled before settlement. Each of the five signed transactions stayed off chain until the chain was past its TTL (`found: false, final: true`, checked at 16:40 SGT), so none can ever land. My agent re-quoted without C and paid B.
+
+During Phase 2, I ran `scripts/demo-check.sh --runs 1` after every market deploy: PR-13, PR-16, PR-17 (with a worker on probation connected) and main `931e6e7`. Each passed 4 of 4, with a real mid-job kill. Their rows are in [docs/RUNS.md](docs/RUNS.md).
 
 ## Masumi escrow evidence
 

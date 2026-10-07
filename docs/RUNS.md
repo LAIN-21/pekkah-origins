@@ -107,3 +107,29 @@ Written by `scripts/demo-check.sh --escrow` from the run's events (PLAN 12.3).
 | Released | [`dced2b3a452552d06287c9c28d020646cddda6c19cf1833a5a95302a67691a79`](https://preprod.cardanoscan.io/transaction/dced2b3a452552d06287c9c28d020646cddda6c19cf1833a5a95302a67691a79): Masumi Withdraw as the seller after the unlock, 2026-10-07 13:30:19 SGT: 0.05 tUSDM to worker A (`addr_test1qp8t7ygtvkhvkgscc0ryv8nrt7fprvrnvudyswh82rtuw4w6776etg5mkl5ufe8c3eexxrnh88jtpxq9hh5zqytuawaqxfywga`), and the 4.00399 tADA collateral back to the buyer (`addr_test1qptcvmw5j9awp37a2a6ant3fx33a8zex7rvmkyg0823n6t6gsxx6cymneachcxvmu6awzjj8t6yndnkmy86u3mmwjy4qv86get`) |
 | Status | Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back. Dispute is my next step. |
 
+### Masumi evidence: Claude via MCP, 2026-10-07 14:21:25 SGT
+
+Written by hand from the run's events (`GET /api/runs/01M4AGC78QWE3M6K89ZT0NZYKC/events`); every transaction is on Cardanoscan.
+
+| Field | Value |
+| --- | --- |
+| Run | `custom`, client "Claude via MCP", run `01M4AGC78QWE3M6K89ZT0NZYKC`, 2026-10-07 14:21:25 SGT ([open](https://146-190-188-100.sslip.io/?run=01M4AGC78QWE3M6K89ZT0NZYKC)) |
+| Request | image, 1024×1024: "Vintage travel poster of a lone lighthouse on a rocky cliff at dusk…", budget $0.03 |
+| Quotes | at $0.03, twice: no offer; A over budget ($0.05), B and C no GPU. At $0.05: A |
+| Decision | exact, worker A, $0.05. Reason, my agent's statement: "Only GPU worker available; my human approved $0.05 for a 1024x1024 lighthouse poster." |
+| Compute | worker A, image, 6.8 s, sha256 `9c1abc107201e1f40f3277480251ed17e0894e70da7aae89c5e187a2cc600e38`; the market checked a 1024×1024 PNG |
+| Lock tx | [`59be4b5be5921afbe04973fc6fb9ef7b42e855df4f166f6690b9623490c8f612`](https://preprod.cardanoscan.io/transaction/59be4b5be5921afbe04973fc6fb9ef7b42e855df4f166f6690b9623490c8f612): 0.05 tUSDM plus 4.00399 tADA collateral; request hash `761b91c385e43aa5f8793066ac2814a7727f40e1dc8925e99e49e690b5d8298f`; 402 at 14:21:57, submit result by 14:37:57, unlock 14:53:27 (SGT) |
+| Result submitted | [`f47530f39e79fa63a2e64c14e60b198b0b4d88a2819a02ba592b4e7731e4a3ba`](https://preprod.cardanoscan.io/transaction/f47530f39e79fa63a2e64c14e60b198b0b4d88a2819a02ba592b4e7731e4a3ba): the delivered result's sha256 in the datum |
+| Released | [`354908038698f919555d80ca507eb60f5a052e46d7cf5f83509e32c3af60ca24`](https://preprod.cardanoscan.io/transaction/354908038698f919555d80ca507eb60f5a052e46d7cf5f83509e32c3af60ca24), 14:54:48 SGT: 0.05 tUSDM to worker A, and the 4.00399 tADA collateral back to the buyer (`addr_test1qzcnmhdaxv9ztxh2aclntrmcf7jss8vpangcqgttrx0eszda6st433u80r65mq5yktcck682n07yzt5mcf7ava6rdppqjjp79x`, the MCP's account) |
+| Status | Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back. Dispute is my next step. |
+
+### What became of the earlier locks
+
+Written by hand, 7 October, from the runs' events and the chain.
+
+| Lock | Outcome |
+| --- | --- |
+| 16:34 lock [`92787101…`](https://preprod.cardanoscan.io/transaction/9278710115f72d428d2d69a2e24271f3bfe14f1b980503322471793568f7c4de), the Masumi minimum; no result was submitted | Refunded to the buyer by my agent, 2026-10-06 23:44 SGT: [`ba8e3eb4…`](https://preprod.cardanoscan.io/transaction/ba8e3eb4bfe46d0a7dd0eedd70deba6a6ceecd604f812eb8062b08027d50b34d). `escrow.refunded` is in run `01M485KG1XAB9W93HGFDNAPK77` |
+| 18:24 lock [`ae0a2d86…`](https://preprod.cardanoscan.io/transaction/ae0a2d862c7b62a8cf4965bd8e24aa9be1108464ee37e06110b079a37b517099); result submitted | Released to worker A by the market, 2026-10-06 22:45 SGT: [`6467bc3e…`](https://preprod.cardanoscan.io/transaction/6467bc3ec2cf53ab747cb9fb7f217f6d20c69180f56c6c553964e4e34cf57800). `escrow.released` is in run `01M48BXBXCXQ4RPXD9RFB9WZFY` |
+| PR-02m smoke lock [`8d35f77f…`](https://preprod.cardanoscan.io/transaction/8d35f77f04e92d46995bf06861dcd43afa4262e064ee7156ba14da607689cc9d), a dev lock with no run | Refunded to the buyer, 2026-10-06 23:46 SGT: [`4077cc94…`](https://preprod.cardanoscan.io/transaction/4077cc94005291d648166d2ff892cbc13093afaf7593c68abd51bfc05a205ec6), recorded by the market |
+| PR-10's first lock [`a6be16bc…`](https://preprod.cardanoscan.io/transaction/a6be16bcf0c79b4ca41acc934cbeca811ba2193018bdb8531e783263faba4510); no result | Still locked in escrow. Refundable with `pnpm agent refund a6be16bcf0c79b4ca41acc934cbeca811ba2193018bdb8531e783263faba4510#0` |
