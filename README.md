@@ -5,7 +5,7 @@ Pekkah is a market where idle machines sell compute per job to AI agents. My age
 **Live:** https://146-190-188-100.sslip.io (Cardano preprod, test tokens only)
 
 Three things came on top of the basic market:
-- **Escrow, end to end.** Through Masumi's escrow, the payment is locked after the job delivers. The market then records the result's hash in the escrow as worker A, and after the unlock time releases it: the price to worker A, the collateral back to the buyer. No human step.
+- **Escrow, end to end.** Through Masumi's escrow, the payment is locked after the job delivers. The market then records the result's hash in the escrow as worker A, and after the unlock time releases it: the price to worker A, the collateral back to the buyer. No human step. A lock whose result never comes goes back to the buyer.
 - **Claude shops for compute.** With the Pekkah MCP server, Claude looks at the market, gets free quotes, keeps to the budget I gave and asks me before it pays more.
 - **Any machine can join.** One command installs the worker on a Linux machine with Docker. It joins on probation: listed and measured, but it sells nothing until I add it to the allowlist.
 
@@ -86,6 +86,7 @@ Workers need no inbound port: they dial out to the market. Each CPU job runs in 
 With the escrow route, step 6 locks the payment in Masumi's `vested_pay` escrow contract instead of paying the worker. The lock names worker A as the seller and commits to the exact request my agent quoted. Then:
 - **Result.** The market records the delivered result's hash in the escrow as worker A (Masumi's `SubmitResult`, signed with Seller A's key). The funds stay locked.
 - **Release.** After the unlock time, about 31 minutes after the 402, the market releases the escrow as worker A (Masumi's `Withdraw`). The tUSDM goes to worker A and the buyer's collateral comes back, in one transaction.
+- **Refund.** If no result is submitted by the submit-result deadline, my agent takes the lock back (Masumi's `WithdrawRefund`, `pnpm agent refund <lockTx>#<index>`): the price and the collateral go back to the buyer. The market records the refund only after it finds it on chain.
 
 Every escrow transaction is evaluated against the real validator before it is signed. Dispute is my next step.
 
@@ -130,7 +131,7 @@ Written by `scripts/demo-check.sh --escrow` from real runs' events.
 
 #### The first lock: gpu-image-escrow, 2026-10-06 16:34:39 SGT
 
-The Masumi minimum, from before release existed. The block below is as it was written then.
+The Masumi minimum, from before release existed. The block below is as it was written then. No result was ever submitted for this lock, so after its deadline my agent refunded it, on 6 October at 23:44 SGT: [`ba8e3eb4…`](https://preprod.cardanoscan.io/transaction/ba8e3eb4bfe46d0a7dd0eedd70deba6a6ceecd604f812eb8062b08027d50b34d) sent the 0.05 tUSDM and the 4.00399 tADA collateral back to the buyer, and the run now ends with `escrow.refunded`.
 
 | Field | Value |
 | --- | --- |
@@ -187,6 +188,8 @@ curl -fsSL https://raw.githubusercontent.com/LAIN-21/pekkah-origins/main/install
 
 The installer checks the machine, pulls the published worker and job images, runs a local benchmark, and starts the worker. The worker dials out to the market, so it needs no inbound port. It joins **on probation**: the market lists it under an id it chooses (`joining-` plus 6 hex characters), measures it with a calibration job whose answer it checks, and never sells its compute. A worker sells once I add its id to the allowlist; then it installs with `--id` and `--token`. `--uninstall` removes everything. [docs/WORKER.md](docs/WORKER.md) has the details: the trust model, what the market checks, and the GPU path.
 
+The one-liner is tested on a fresh GitHub-hosted Ubuntu machine against the hosted market: [install-smoke](https://github.com/LAIN-21/pekkah-origins/actions/runs/37551406855) installs the worker, sees it join on probation with its calibration checked and `selling: false`, checks that the public quotes don't change, and uninstalls it without a trace.
+
 ## Honest limits
 
 - Preprod only, paid in test tokens.
@@ -194,7 +197,7 @@ The installer checks the machine, pulls the published worker and job images, run
 - **Reported versus measured.** Hardware is reported by the machine; speed is measured by the market. CPU work is answer-checked at calibration, not on every job. GPU work is timed. The market checks that each image is a PNG of the requested size, not what it shows.
 - **Over-budget buys.** An over-budget buy rests on my agent's statement that I approved it. The wallet's spend caps are the hard limit.
 - **Seller A's key.** The market holds it: it signs the escrow terms, the result hash and the release, so in this demo the market could also spend Seller A's funds. Next: the worker signs over its WebSocket.
-- **Escrow coverage.** Release is built: it comes after the unlock, about 31 minutes after the 402. Dispute is next.
+- **Escrow coverage.** Release is built: it comes after the unlock, about 31 minutes after the 402. Refund of locks with no result is built: my agent sends it, and the market checks it on chain. Dispute is next.
 - **Default payments.** Between verification and settlement, the market holds the buyer's signed transaction. If the job fails, the market discards it, but a dishonest market could still broadcast it before its 10-minute TTL. Escrow removes that trust.
 - The reverse risk also exists: a buyer could spend the same inputs elsewhere before settlement. The worker then loses that job's compute, but the market withholds the result.
 - **One market instance** with in-memory state. A restart drops open offers, and agents re-quote.
