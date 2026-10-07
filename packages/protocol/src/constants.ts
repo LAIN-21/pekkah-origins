@@ -79,7 +79,7 @@ export const MASUMI_LOCK_LABEL =
   "Locked in Masumi escrow until the unlock time. Then the seller collects the price and the collateral goes back to the buyer. Dispute is my next step.";
 /** Only once an escrow.released event exists for the lock (CLAUDE.md rule 4). */
 export const MASUMI_RELEASED_LABEL =
-  "Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back.";
+  "Released from Masumi escrow: the seller collected the price, and the buyer's collateral came back. Dispute is my next step.";
 /** Only once an escrow.refunded event exists for the lock (CLAUDE.md rule 4). */
 export const MASUMI_REFUNDED_LABEL =
-  "Refunded from Masumi escrow: the price and the collateral went back to the buyer.";
+  "Refunded from Masumi escrow: the price and the collateral went back to the buyer. Dispute is my next step.";
