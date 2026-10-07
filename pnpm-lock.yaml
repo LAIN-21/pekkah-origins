@@ -187,9 +187,15 @@ importers:
 
   apps/agent:
     dependencies:
+      '@evolution-sdk/evolution':
+        specifier: 0.5.14
+        version: 0.5.14
       '@pekkah/buyer':
         specifier: workspace:*
         version: link:../../packages/buyer
+      '@pekkah/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
       '@pekkah/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -399,6 +405,9 @@ importers:
 
   packages/payments:
     dependencies:
+      '@evolution-sdk/evolution':
+        specifier: 0.5.14
+        version: 0.5.14
       '@pekkah/protocol':
         specifier: workspace:*
         version: link:../protocol

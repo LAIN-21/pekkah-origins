@@ -86,6 +86,7 @@ export class RunStore {
         outputIndex?: number;
         unlockTime: number;
         releasedTxHash?: string;
+        refundedTxHash?: string;
       }
     | undefined {
     for (const run of this.runs.values()) {
@@ -98,12 +99,17 @@ export class RunStore {
         (e): e is Extract<JobEvent, { type: "escrow.released" }> =>
           e.type === "escrow.released" && e.data.lockTxHash === lockTxHash,
       );
+      const refunded = run.events.find(
+        (e): e is Extract<JobEvent, { type: "escrow.refunded" }> =>
+          e.type === "escrow.refunded" && e.data.lockTxHash === lockTxHash,
+      );
       return {
         runId: run.runId,
         ...(locked.jobId ? { jobId: locked.jobId } : {}),
         ...(locked.data.outputIndex !== undefined ? { outputIndex: locked.data.outputIndex } : {}),
         unlockTime: Number(locked.data.unlockTime),
         ...(released ? { releasedTxHash: released.data.txHash } : {}),
+        ...(refunded ? { refundedTxHash: refunded.data.txHash } : {}),
       };
     }
     return undefined;

@@ -1,6 +1,7 @@
-import { AGENT_EVENT_TYPES, AgentEventsBody, type JobEventInput } from "@pekkah/protocol";
+import { AGENT_EVENT_TYPES, AgentEventsBody, type JobEventInput, TxHash } from "@pekkah/protocol";
 import type { Logger } from "@pekkah/runtime";
 import express, { type RequestHandler } from "express";
+import { z } from "zod";
 import type { EventBus } from "./events.js";
 import { type JobStore, jobView } from "./jobs.js";
 import { rateLimit } from "./limits.js";
@@ -90,25 +91,63 @@ export function registerReadRoutes(app: express.Express, o: ReadRouteOptions): v
 }
 
 /** POST /api/agent-events (Bearer AGENT_TOKEN): the agent's own events into the bus. */
+/**
+ * PR-16b: a chain event my agent reports (a refund it sent), checked on chain before the
+ * market emits it. Absent while the market has no chain access (Masumi off).
+ */
+export interface ReportedChainEvents {
+  refunded(report: {
+    lockTxHash: string;
+    txHash: string;
+  }): Promise<{ ok: true; event: JobEventInput | null } | { ok: false; reason: string }>;
+}
+
+const Refunded = z.object({ lockTxHash: TxHash, txHash: TxHash });
+
 export function registerAgentEvents(
   app: express.Express,
   guard: RequestHandler,
   bus: EventBus,
+  reported?: ReportedChainEvents,
 ): void {
-  app.post("/api/agent-events", guard, express.json({ limit: "256kb" }), (req, res) => {
-    const parsed = AgentEventsBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "invalid_events", issues: parsed.error.issues.slice(0, 5) });
-      return;
+  app.post("/api/agent-events", guard, express.json({ limit: "256kb" }), async (req, res) => {
+    try {
+      const parsed = AgentEventsBody.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_events", issues: parsed.error.issues.slice(0, 5) });
+        return;
+      }
+      let accepted = 0;
+      const reasons: string[] = [];
+      for (const post of parsed.data.events) {
+        if (post.type === "escrow.refunded") {
+          const report = Refunded.safeParse(post.data);
+          if (!report.success || !reported) {
+            reasons.push(report.success ? "the market has no chain access" : "invalid refund");
+            continue;
+          }
+          const checked = await reported.refunded(report.data);
+          if (!checked.ok) {
+            reasons.push(checked.reason);
+            continue;
+          }
+          // null: the run already records this refund, so it is not emitted twice.
+          if (!checked.event || bus.emit(checked.event)) accepted += 1;
+          continue;
+        }
+        if (!(AGENT_EVENT_TYPES as readonly string[]).includes(post.type)) continue;
+        const { ts: _ts, ...rest } = post;
+        const event = bus.emit({ ...rest, source: "agent" } as JobEventInput);
+        if (event) accepted += 1;
+      }
+      const rejected = parsed.data.events.length - accepted;
+      res
+        .status(rejected ? (reasons.length ? 422 : 400) : 202)
+        .json({ accepted, rejected, ...(reasons.length ? { reasons } : {}) });
+    } catch {
+      // Only the chain check can throw: the facilitator or Blockfrost was unreachable.
+      if (!res.headersSent) res.status(502).json({ error: "chain_unavailable" });
+      else res.end();
     }
-    let accepted = 0;
-    for (const post of parsed.data.events) {
-      if (!(AGENT_EVENT_TYPES as readonly string[]).includes(post.type)) continue;
-      const { ts: _ts, ...rest } = post;
-      const event = bus.emit({ ...rest, source: "agent" } as JobEventInput);
-      if (event) accepted += 1;
-    }
-    const rejected = parsed.data.events.length - accepted;
-    res.status(rejected ? 400 : 202).json({ accepted, rejected });
   });
 }

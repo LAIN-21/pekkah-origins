@@ -333,11 +333,21 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 export type JobEventInput = DistributiveOmit<JobEvent, "id" | "ts">;
 
 /**
+ * Chain events my agent may report through /api/agent-events (PR-16b: a refund it sent). The
+ * market emits one only after it finds the transaction on chain, as a `chain` event.
+ */
+export const AGENT_REPORTED_CHAIN_TYPES = [
+  "escrow.refunded",
+] as const satisfies readonly (typeof CHAIN_EVENT_TYPES)[number][];
+export type AgentReportedChainType = (typeof AGENT_REPORTED_CHAIN_TYPES)[number];
+
+/**
  * One agent event as POSTed to /api/agent-events (Bearer AGENT_TOKEN). The market adds `id` and
- * `source: "agent"`, then validates the whole event with `JobEvent`.
+ * `source: "agent"`, then validates the whole event with `JobEvent`. A reported chain event is
+ * checked on chain first, and emitted with `source: "chain"`.
  */
 export const AgentEventPost = z.object({
-  type: z.enum(AGENT_EVENT_TYPES),
+  type: z.enum([...AGENT_EVENT_TYPES, ...AGENT_REPORTED_CHAIN_TYPES]),
   data: z.unknown(),
   runId: Id.optional(),
   jobId: Id.optional(),
