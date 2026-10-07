@@ -29,6 +29,8 @@ import { collateralReserve, type SellerChain, type SellerClient } from "./result
 const WITHDRAW = 0n;
 /** vested_pay V2 `State`: FundsLocked 0, ResultSubmitted 1, … */
 const RESULT_SUBMITTED = 1n;
+/** States a buyer may refund from (WithdrawRefund): FundsLocked 0, RefundRequested 2, RefundAuthorized 5. */
+const REFUNDABLE = new Set([0n, 2n, 5n]);
 /** How long a release transaction may wait to land. */
 const VALID_FOR_MS = 180_000;
 /** The validity range starts this long after unlock_time, which covers slot rounding. */
@@ -442,6 +444,10 @@ export async function checkRefund(
   const tx = await txUtxos(txHash);
   if (!view || !token || !tx)
     return { ok: false, reason: "the escrow or the refund is unreadable" };
+  // A spend after a result was submitted is the seller's release, never a refund.
+  if (!REFUNDABLE.has(view.state) || view.resultHash !== "") {
+    return { ok: false, reason: "the escrow held a result: its spend is a release, not a refund" };
+  }
   const buyerAddress = Address.toBech32(
     addressFromCredentials(view.buyerReturnAddress ?? view.buyer),
   );

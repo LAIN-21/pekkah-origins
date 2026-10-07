@@ -30,6 +30,7 @@ import { registerPaidJobRoute } from "./paid.js";
 import { createMarketPayments } from "./payments.js";
 import { registerQuoteRoute } from "./quotes.js";
 import { pendingReleases, ReleaseScheduler } from "./release-scheduler.js";
+import { ReportedRefunds } from "./reported-refunds.js";
 import { createResultSubmitter, tryCreateSellerChain } from "./result-submit.js";
 import { type ReportedChainEvents, registerAgentEvents, registerReadRoutes } from "./routes.js";
 import { RunStore } from "./runs.js";
@@ -132,12 +133,19 @@ if (releases) {
   for (const pending of pendingReleases(runs.all())) releases.add(pending);
   bus.subscribe((event) => releases.observe(event));
 }
-// PR-16b: my agent reports the refunds it sends; the market checks each on chain first.
+// PR-16b: my agent reports the refunds it sends; the market checks each on chain first, and
+// records each one once, run or no run.
+const refunds = new ReportedRefunds(env.DATA_DIR, log);
 const reported: ReportedChainEvents | undefined = sellerChain
   ? {
       refunded: async (report) => {
         const lock = runs.findLock(report.lockTxHash);
-        if (lock?.refundedTxHash === report.txHash) return { ok: true, event: null };
+        if (
+          lock?.refundedTxHash === report.txHash ||
+          refunds.has(report.lockTxHash, report.txHash)
+        ) {
+          return { ok: true, event: null };
+        }
         const checked = await checkRefund(
           chainTxUtxos(sellerChain.chainUrl),
           {
@@ -147,6 +155,7 @@ const reported: ReportedChainEvents | undefined = sellerChain
           report.txHash,
         );
         if (!checked.ok) return checked;
+        refunds.add(report.lockTxHash, report.txHash);
         return {
           ok: true,
           event: {

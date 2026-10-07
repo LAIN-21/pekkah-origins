@@ -3,11 +3,14 @@ import { NETWORK } from "@pekkah/protocol";
 import { addressCredentials, masumiEscrowAddress, parseMasumiLockDatum } from "@x402/cardano";
 import { describe, expect, it } from "vitest";
 import {
+  type BuyerClient,
   type ChainOutput,
   MAX_COLLATERAL,
   outputReferenceTag,
   parseLockRef,
   pureAdaReserve,
+  refund,
+  refundDestination,
   refundedIn,
   refundRefusal,
   refundReport,
@@ -138,5 +141,48 @@ describe("the refund transaction", () => {
     // Just over 5 tADA: the return must stay above its minimum.
     expect(pureAdaReserve([utxo(5, 5_100_000n)])?.collateral).toBe(3_600_000n);
     expect(pureAdaReserve([utxo(4, 1_000_000n)])).toBeNull();
+  });
+});
+
+describe("where a refund goes, and what counts as one", () => {
+  it("goes to the datum's buyer, or to its return address when the lock names one", () => {
+    expect(Address.toBech32(refundDestination(view))).toBe(buyer);
+    const elsewhere = { ...view, buyerReturnAddress: view.seller };
+    expect(Address.toBech32(refundDestination(elsewhere))).not.toBe(buyer);
+    expect(Address.toBech32(refundDestination(elsewhere))).toMatch(/^addr_test1q/);
+  });
+
+  // The lock datum with a result submitted (state ResultSubmitted, a result hash set).
+  const fields = [...(Data.fromCBORHex(LOCK_DATUM) as Data.Constr).fields];
+  fields[11] = Data.bytearray("ab".repeat(32));
+  fields[18] = Data.constr(1n, []);
+  const SUBMITTED = Data.toCBORHex(Data.constr(0n, fields));
+  const SPENDER = "d".repeat(64);
+  const deps = (datum: string) => ({
+    client: { address: async () => Address.fromBech32(buyer) } as unknown as BuyerClient,
+    txUtxos: async (txHash: string) =>
+      txHash === LOCK
+        ? { outputs: [{ ...escrow, inline_datum: datum, consumed_by_tx: SPENDER }] }
+        : { outputs: [{ ...escrow, address: buyer, inline_datum: null }] },
+    waitForTx: async () => true,
+    now: () => Date.now(),
+    log: () => {},
+  });
+
+  it("reports a refund already on chain, without sending another", async () => {
+    const outcome = await refund({ txHash: LOCK, outputIndex: 0 }, deps(LOCK_DATUM), false);
+    expect(outcome).toMatchObject({
+      ok: true,
+      alreadyRefunded: true,
+      report: { txHash: SPENDER, buyerAddress: buyer, amountAtomic: "50000" },
+    });
+  });
+
+  it("never calls the spend of an escrow with a result a refund: that is a release", async () => {
+    const outcome = await refund({ txHash: LOCK, outputIndex: 0 }, deps(SUBMITTED), false);
+    expect(outcome).toEqual({
+      ok: false,
+      reason: `the escrow was spent by ${SPENDER} after a result was submitted: a release, not a refund`,
+    });
   });
 });

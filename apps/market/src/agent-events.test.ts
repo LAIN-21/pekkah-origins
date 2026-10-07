@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import { Address } from "@evolution-sdk/evolution";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Address, Data } from "@evolution-sdk/evolution";
 import { explorerTxUrl, type JobEvent, NETWORK } from "@pekkah/protocol";
 import { createLogger } from "@pekkah/runtime";
 import { masumiEscrowAddress, parseMasumiLockDatum } from "@x402/cardano";
@@ -8,8 +11,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bearerGuard } from "./dev.js";
 import { addressFromCredentials, type ChainTxUtxos, checkRefund } from "./escrow-release.js";
 import { EventBus } from "./events.js";
+import { ReportedRefunds } from "./reported-refunds.js";
+import { submittedDatum } from "./result-submit.js";
 import { type ReportedChainEvents, registerAgentEvents } from "./routes.js";
-import { LOCK_DATUM, TUSDM_UNIT } from "./test-support/escrow.js";
+import { LOCK_DATUM, RESULT, TUSDM_UNIT } from "./test-support/escrow.js";
 
 const log = createLogger("agent-events-test");
 const ESCROW = masumiEscrowAddress(NETWORK);
@@ -71,6 +76,52 @@ describe("checking a reported refund on chain", () => {
       ok: false,
       reason: "the buyer did not get all of the escrow back",
     });
+  });
+});
+
+describe("refunds versus releases", () => {
+  it("never takes the spend of an escrow with a result for a refund", async () => {
+    const withResult = Data.toCBORHex(
+      submittedDatum(Data.fromCBORHex(LOCK_DATUM) as Data.Constr, RESULT, 1n),
+    );
+    // The lock, its SubmitResult continuation, then a spend that gives the buyer everything.
+    const SUBMIT = "d".repeat(64);
+    const txs = chain({
+      [LOCK]: [out({ inline_datum: LOCK_DATUM, consumed_by_tx: SUBMIT })],
+      [SUBMIT]: [out({ inline_datum: withResult, consumed_by_tx: REFUND })],
+      [REFUND]: [out({ address: BUYER })],
+    });
+    expect(await checkRefund(txs, { txHash: LOCK }, REFUND)).toEqual({
+      ok: false,
+      reason: "the escrow held a result: its spend is a release, not a refund",
+    });
+  });
+});
+
+describe("the refunds the market has recorded", () => {
+  it("are kept across a restart, so a repeated report emits nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pekkah-refunds-"));
+    try {
+      const first = new ReportedRefunds(dir, log);
+      expect(first.has(LOCK, REFUND)).toBe(false);
+      first.add(LOCK, REFUND);
+      const restarted = new ReportedRefunds(dir, log);
+      expect(restarted.has(LOCK, REFUND)).toBe(true);
+      expect(restarted.has(LOCK, OTHER)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("start empty without a data directory, or from an unreadable file", () => {
+    expect(new ReportedRefunds(null, log).has(LOCK, REFUND)).toBe(false);
+    const dir = mkdtempSync(join(tmpdir(), "pekkah-refunds-"));
+    try {
+      writeFileSync(join(dir, "refunds.json"), "{ not json");
+      expect(new ReportedRefunds(dir, log).has(LOCK, REFUND)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -5,6 +5,7 @@ import {
   Data,
   KeyHash,
   preprod,
+  ScriptHash,
   TransactionHash,
   TransactionInput,
   type UTxO,
@@ -72,6 +73,28 @@ export function parseLockRef(value: string): LockRef | null {
 
 const sameCredential = (a: MasumiCredential | undefined, b: MasumiCredential | undefined) =>
   a?.isScript === b?.isScript && a?.hash === b?.hash;
+
+const credential = (c: MasumiCredential) =>
+  c.isScript ? ScriptHash.fromHex(c.hash) : KeyHash.fromHex(c.hash);
+
+/**
+ * Where a refund goes: the datum's `buyer_return_address`, or its `buyer`, rebuilt exactly
+ * (payment and stake credentials). With a return address set, the contract requires the whole
+ * escrow there; without one, it is the buyer's own address.
+ */
+export function refundDestination(view: MasumiDatumView): Address.Address {
+  const to = view.buyerReturnAddress ?? view.buyer;
+  if (to.pointer) throw new Error("pointer addresses are not supported");
+  return new Address.Address({
+    networkId: 0,
+    paymentCredential: credential(to.payment),
+    ...(to.stake ? { stakingCredential: credential(to.stake) } : {}),
+  });
+}
+
+/** Whether a lock may still be refunded at all: no result, and not released or disputed. */
+export const refundable = (view: MasumiDatumView) =>
+  REFUNDABLE.has(view.state) && view.resultHash === "";
 
 /** Why this wallet can't refund this escrow now, or null when it can. */
 export function refundRefusal(
@@ -188,21 +211,31 @@ export async function refund(
   }
   const view = parseMasumiLockDatum(escrow.inline_datum);
   if (!view) return { ok: false, reason: "the escrow datum is malformed" };
+  // The wallet signs and must be the datum's buyer; the refund goes where the datum says.
   const walletAddress = await d.client.address();
-  const buyer = Address.toBech32(walletAddress);
+  const walletBech32 = Address.toBech32(walletAddress);
+  const destination = refundDestination(view);
+  const refundTo = Address.toBech32(destination);
 
   if (escrow.consumed_by_tx) {
+    // A spend after a result was submitted is the seller's release, never a refund.
+    if (!refundable(view)) {
+      return {
+        ok: false,
+        reason: `the escrow was spent by ${escrow.consumed_by_tx} after a result was submitted: a release, not a refund`,
+      };
+    }
     const spending = await d.txUtxos(escrow.consumed_by_tx);
-    if (spending && refundedIn(escrow, spending.outputs, buyer)) {
-      const report = refundReport(lock, escrow.consumed_by_tx, escrow, buyer);
+    if (spending && refundedIn(escrow, spending.outputs, refundTo)) {
+      const report = refundReport(lock, escrow.consumed_by_tx, escrow, refundTo);
       return { ok: true, alreadyRefunded: true, dryRun, report };
     }
     return {
       ok: false,
-      reason: `the escrow was spent by ${escrow.consumed_by_tx}, and not as a refund to this wallet`,
+      reason: `the escrow was spent by ${escrow.consumed_by_tx}, and not as a refund to ${refundTo}`,
     };
   }
-  const refusal = refundRefusal(view, addressCredentials(buyer), d.now());
+  const refusal = refundRefusal(view, addressCredentials(walletBech32), d.now());
   if (refusal) return { ok: false, reason: refusal };
 
   // Collateral: a pure-ADA wallet UTxO, of which at most 5 tADA is put up. Without one, a real
@@ -233,7 +266,7 @@ export async function refund(
     }),
   ]);
   if (!utxo) return { ok: false, reason: "the escrow output is not visible" };
-  const keyHash = addressCredentials(buyer).payment;
+  const keyHash = addressCredentials(walletBech32).payment;
   if (keyHash.isScript) return { ok: false, reason: "the buyer must be a key address" };
   const from =
     view.state === REFUND_AUTHORIZED
@@ -244,7 +277,7 @@ export async function refund(
     .collectFrom({ inputs: [utxo], redeemer: Data.constr(WITHDRAW_REFUND, []) })
     .attachScript({ script: masumiValidator() })
     .payToAddress({
-      address: walletAddress,
+      address: destination,
       assets: utxo.assets,
       datum: inlineDatum(outputReferenceTag(lock.txHash, lock.outputIndex)),
       autoMinUtxo: false,
@@ -267,7 +300,7 @@ export async function refund(
     steps: r.exUnits.steps.toString(),
   }));
   if (dryRun) {
-    const report = refundReport(lock, "0".repeat(64), escrow, buyer);
+    const report = refundReport(lock, "0".repeat(64), escrow, refundTo);
     return { ok: true, alreadyRefunded: false, dryRun, report, feeLovelace, exUnits };
   }
   const signed = await built.sign();
@@ -276,7 +309,7 @@ export async function refund(
     ok: true,
     alreadyRefunded: false,
     dryRun,
-    report: refundReport(lock, txHash, escrow, buyer),
+    report: refundReport(lock, txHash, escrow, refundTo),
     feeLovelace,
     exUnits,
     ...(collateralTxHash ? { collateralTxHash } : {}),
